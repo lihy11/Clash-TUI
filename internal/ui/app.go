@@ -19,8 +19,11 @@ import (
 )
 
 var tabs = []string{"Dashboard", "Network", "Profiles", "System"}
+var tabIcons = []string{"󰕮", "󰤨", "󰈯", "󰒓"}
 var networkTabs = []string{"Proxies", "Rules", "Connections"}
 var systemTabs = []string{"Logs", "Settings"}
+
+const defaultThemeIndex = 1 // Gruvbox
 
 type notifyItem struct {
 	At    time.Time
@@ -111,6 +114,11 @@ type model struct {
 	nodes   []string
 	rules   []mihomo.Rule
 	conns   []mihomo.Connection
+	txRate  float64
+	rxRate  float64
+	lastUp  int64
+	lastDn  int64
+	lastIO  time.Time
 
 	providers      []string
 	providersState map[string]mihomo.Provider
@@ -164,7 +172,7 @@ type model struct {
 func NewModel(cfg config.Settings, rt *runtime.Manager) *model {
 	client, err := mihomo.NewClient(cfg.Endpoint, cfg.Secret)
 	m := &model{
-		styles:         defaultStyles(0),
+		styles:         defaultStyles(defaultThemeIndex),
 		cfg:            cfg,
 		client:         client,
 		rt:             rt,
@@ -177,7 +185,7 @@ func NewModel(cfg config.Settings, rt *runtime.Manager) *model {
 		providersState: map[string]mihomo.Provider{},
 		networkTab:     0,
 		systemTab:      0,
-		themeIndex:     0,
+		themeIndex:     defaultThemeIndex,
 		notifications:  make([]notifyItem, 0, 30),
 		statusMini:     make([]int, 0, 60),
 		nodePageSize:   12,
@@ -311,6 +319,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.lastErr = nil
 	case connectionsMsg:
 		m.conns = msg.c.Connections
+		m.updateThroughput(msg.c.Connections)
 		m.connCursor = clamp(m.connCursor, 0, max(0, len(m.conns)-1))
 		m.lastErr = nil
 	case providersMsg:
@@ -548,7 +557,7 @@ func (m *model) handleGlobalKeys(msg tea.KeyMsg) tea.Cmd {
 			m.systemTab = (m.systemTab - 1 + len(systemTabs)) % len(systemTabs)
 			return nil
 		}
-	case "F2":
+	case "F2", "f2":
 		m.cycleTheme()
 		return nil
 	case "r":
@@ -850,13 +859,32 @@ func (m *model) applySettings() tea.Cmd {
 }
 
 func (m *model) renderHeader(w int) string {
-	title := m.styles.header.Render("STATUS")
-	mode := m.pillForMode()
-	core := m.styles.pill.Render("core: managed")
-	theme := m.styles.pill.Render("theme: " + themes[m.themeIndex].Name)
-	right := lipgloss.JoinHorizontal(lipgloss.Left, mode, " ", core, " ", theme)
-	line := lipgloss.JoinHorizontal(lipgloss.Left, title, "  ", right, "  ", m.styles.subtle.Render("Clash TUI"))
-	return m.styles.statusBar.Width(w).MaxWidth(w).Render(line)
+	title := "Clash-TUI"
+	mode := strings.ToUpper(strings.TrimSpace(m.baseCfg.Mode))
+	if mode == "" {
+		mode = "RULE"
+	}
+	controller := strings.TrimPrefix(strings.TrimPrefix(m.cfg.Endpoint, "http://"), "https://")
+	if controller == "" {
+		controller = "127.0.0.1:9090"
+	}
+	conn := "CONNECTED"
+	if m.lastErr != nil {
+		conn = "DEGRADED"
+	}
+	connIcon := "●"
+	if m.lastErr != nil {
+		connIcon = "○"
+	}
+	up := formatRateFixed(m.txRate)
+	down := formatRateFixed(m.rxRate)
+	right1 := fmt.Sprintf("%s %s | mode %s | v%s", connIcon, conn, mode, m.version)
+	right2 := fmt.Sprintf("↑ %s ↓ %s | core %s | theme %s", up, down, controller, themes[m.themeIndex].Name)
+	line1 := composeHeaderLine(title, right1, w)
+	line2 := composeHeaderLine("", right2, w)
+	top := m.styles.statusBar.Width(w).MaxWidth(w).Render(line1)
+	bottom := m.styles.statusBar.Width(w).MaxWidth(w).Render(line2)
+	return lipgloss.JoinVertical(lipgloss.Left, top, bottom)
 }
 
 func (m *model) renderTabs(w, y int) string {
@@ -864,12 +892,16 @@ func (m *model) renderTabs(w, y int) string {
 	out := make([]string, 0, len(tabs))
 	cursorX := 0
 	for i, t := range tabs {
-		label := fmt.Sprintf("%d.%s", i+1, t)
+		icon := ""
+		if i < len(tabIcons) {
+			icon = tabIcons[i] + " "
+		}
+		label := fmt.Sprintf("%s%s", icon, t)
 		var token string
 		if i == m.tab {
-			token = m.styles.tabActive.Render(label)
+			token = m.styles.tabActive.Render(" " + label + " ")
 		} else {
-			token = m.styles.tab.Render(label)
+			token = m.styles.tab.Render(" " + label + " ")
 		}
 		wToken := lipgloss.Width(token)
 		m.mainTabTargets = append(m.mainTabTargets, clickTarget{
@@ -879,15 +911,15 @@ func (m *model) renderTabs(w, y int) string {
 			y2:  y + 1,
 			idx: i,
 		})
-		cursorX += wToken + 1
+		cursorX += wToken
 		out = append(out, token)
 	}
-	line := strings.Join(out, " ")
+	line := strings.Join(out, "")
 	return m.styles.mainTabBar.Width(w).MaxWidth(w).Render(line)
 }
 
 func (m *model) renderNetwork(w, h int) string {
-	sub := m.renderSubTabs(networkTabs, m.networkTab, m.bodyY, &m.networkTabTargets)
+	sub := m.renderSubTabs("NETWORK", networkTabs, m.networkTab, m.bodyY, &m.networkTabTargets)
 	sub = m.styles.subTabBar.Width(w).MaxWidth(w).Render(sub)
 	bodyH := max(4, h-lipgloss.Height(sub)-1)
 	var body string
@@ -903,7 +935,7 @@ func (m *model) renderNetwork(w, h int) string {
 }
 
 func (m *model) renderSystem(w, h int) string {
-	sub := m.renderSubTabs(systemTabs, m.systemTab, m.bodyY, &m.systemTabTargets)
+	sub := m.renderSubTabs("SYSTEM", systemTabs, m.systemTab, m.bodyY, &m.systemTabTargets)
 	sub = m.styles.subTabBar.Width(w).MaxWidth(w).Render(sub)
 	bodyH := max(4, h-lipgloss.Height(sub)-1)
 	if m.systemTab == 0 {
@@ -912,16 +944,18 @@ func (m *model) renderSystem(w, h int) string {
 	return lipgloss.JoinVertical(lipgloss.Left, sub, m.renderSettings(w, bodyH))
 }
 
-func (m *model) renderSubTabs(items []string, active, y int, targets *[]clickTarget) string {
+func (m *model) renderSubTabs(section string, items []string, active, y int, targets *[]clickTarget) string {
 	*targets = nil
-	out := make([]string, 0, len(items))
-	cursorX := 0
+	out := make([]string, 0, len(items)+2)
+	sectionToken := m.styles.sectionLabel.Render(section)
+	out = append(out, sectionToken, m.styles.subtle.Render("│"))
+	cursorX := lipgloss.Width(sectionToken) + 1
 	for i, t := range items {
 		var token string
 		if i == active {
-			token = m.styles.subTabActive.Render(t)
+			token = m.styles.subTabActive.Render("• " + t)
 		} else {
-			token = m.styles.subTab.Render(t)
+			token = m.styles.subTab.Render("  " + t)
 		}
 		wToken := lipgloss.Width(token)
 		*targets = append(*targets, clickTarget{
@@ -931,10 +965,10 @@ func (m *model) renderSubTabs(items []string, active, y int, targets *[]clickTar
 			y2:  y + 1,
 			idx: i,
 		})
-		cursorX += wToken + 1
+		cursorX += wToken
 		out = append(out, token)
 	}
-	return strings.Join(out, " ")
+	return strings.Join(out, "")
 }
 
 func (m *model) renderBody(bodyW, bodyH int) string {
@@ -1042,9 +1076,13 @@ func (m *model) renderProxies(w, h int) string {
 
 	leftLines := []string{m.styles.panelTitle.Render("Proxy Groups")}
 	for i, g := range m.groups {
-		line := g
+		typ := strings.ToUpper(strings.TrimSpace(m.proxies[g].Type))
+		if typ == "" {
+			typ = "-"
+		}
+		line := fmt.Sprintf("%s  ·  %s", g, typ)
 		if i == m.groupCursor {
-			line = m.styles.cursor.Render(line)
+			line = m.styles.cursor.Render("┃ " + line)
 		}
 		leftLines = append(leftLines, line)
 		row := 1 + i
@@ -1088,11 +1126,8 @@ func (m *model) renderProxies(w, h int) string {
 	end := min(len(m.nodes), start+maxNodeRows)
 	for i := start; i < end; i++ {
 		n := m.nodes[i]
-		parts := []string{n}
-		if d, ok := m.delayMap[n]; ok {
-			parts = append(parts, fmt.Sprintf("%dms", d))
-		}
-		line := strings.Join(parts, "  ")
+		delayCell := m.renderDelayCell(n)
+		line := fmt.Sprintf("%-34s %s", n, delayCell)
 		if n == now {
 			line = m.styles.selected.Render("★ " + line)
 		}
@@ -1115,8 +1150,8 @@ func (m *model) renderProxies(w, h int) string {
 	if m.proxyPane == 1 {
 		rightLines = append(rightLines, "", m.styles.subtle.Render("Enter: switch node   t: test one   T: test all"))
 	}
-	left := m.renderPanel(leftW, leftH, strings.Join(leftLines, "\n"))
-	right := m.renderPanel(rightW, rightH, strings.Join(rightLines, "\n"))
+	left := m.renderPanelFocused(leftW, leftH, strings.Join(leftLines, "\n"), m.proxyPane == 0)
+	right := m.renderPanelFocused(rightW, rightH, strings.Join(rightLines, "\n"), m.proxyPane == 1)
 	if w < 90 {
 		return lipgloss.JoinVertical(lipgloss.Left, left, " ", right)
 	}
@@ -1244,12 +1279,28 @@ func (m *model) renderSettings(w, h int) string {
 }
 
 func (m *model) renderFooter(w int) string {
-	msg := m.status
-	if msg == "" {
-		msg = "Ready"
+	left := "[Ctrl+K] Command Palette  [1-4] Switch Tab  [q] Quit"
+	switch m.tab {
+	case 1:
+		if m.networkTab == 0 {
+			left = "[↑↓/j k] Move  [Enter] Select  [t/T] Test Delay  [r g d] Mode"
+		} else if m.networkTab == 2 {
+			left = "[↑↓/j k] Move  [x] Close  [X] Close All"
+		}
+	case 2:
+		left = "[i] Import  [u] Update Selected  [U] Update All"
+	case 3:
+		if m.systemTab == 1 {
+			left = "[Tab] Next Field  [Shift+Tab] Prev Field  [s] Save"
+		} else {
+			left = "[c] Clear Logs  [Tab] Switch"
+		}
 	}
-	help := "q quit | tab switch page | 1-4 jump | [ ] sub-tab | : command"
-	line := m.styles.footer.Render(msg + "  |  " + help)
+	msg := strings.TrimSpace(m.status)
+	if msg == "" {
+		msg = "ready"
+	}
+	line := m.styles.footer.Render(left + "  │  📝 " + msg)
 	return lipgloss.NewStyle().Width(w).MaxWidth(w).Render(line)
 }
 
@@ -1709,6 +1760,148 @@ func (m *model) renderPanel(outerW, outerH int, content string) string {
 		MaxWidth(cw).
 		MaxHeight(ch).
 		Render(content)
+}
+
+func (m *model) renderPanelFocused(outerW, outerH int, content string, focused bool) string {
+	cw := max(1, outerW-m.styles.panel.GetHorizontalFrameSize())
+	ch := max(1, outerH-m.styles.panel.GetVerticalFrameSize())
+	st := m.styles.panel
+	if focused {
+		st = st.BorderForeground(lipgloss.Color(themes[m.themeIndex].Primary))
+	} else {
+		st = st.BorderForeground(lipgloss.Color(themes[m.themeIndex].Panel))
+	}
+	return st.
+		Width(cw).
+		Height(ch).
+		MaxWidth(cw).
+		MaxHeight(ch).
+		Render(content)
+}
+
+func (m *model) renderDelayCell(node string) string {
+	delay, ok := m.delayMap[node]
+	if !ok || delay <= 0 {
+		return m.styles.subtle.Render("⚪ timeout")
+	}
+	var color, dot string
+	var bars int
+	switch {
+	case delay < 100:
+		color, dot, bars = themes[m.themeIndex].Success, "🟢", 2
+	case delay <= 300:
+		color, dot, bars = themes[m.themeIndex].Warning, "🟡", 4
+	default:
+		color, dot, bars = themes[m.themeIndex].Error, "🔴", 6
+	}
+	bar := strings.Repeat("▮", bars)
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(fmt.Sprintf("%s %s %4dms", dot, bar, delay))
+}
+
+func (m *model) updateThroughput(conns []mihomo.Connection) {
+	var up, dn int64
+	for _, c := range conns {
+		up += c.Upload
+		dn += c.Download
+	}
+	now := time.Now()
+	if m.lastIO.IsZero() {
+		m.lastUp = up
+		m.lastDn = dn
+		m.lastIO = now
+		return
+	}
+	dt := now.Sub(m.lastIO).Seconds()
+	if dt <= 0 {
+		return
+	}
+	du := up - m.lastUp
+	dd := dn - m.lastDn
+	if du < 0 {
+		du = 0
+	}
+	if dd < 0 {
+		dd = 0
+	}
+	m.txRate = float64(du) / dt
+	m.rxRate = float64(dd) / dt
+	m.lastUp = up
+	m.lastDn = dn
+	m.lastIO = now
+}
+
+func formatRate(v float64) string {
+	units := []string{"B/s", "KB/s", "MB/s", "GB/s"}
+	u := 0
+	for v >= 1024 && u < len(units)-1 {
+		v /= 1024
+		u++
+	}
+	if u == 0 {
+		return fmt.Sprintf("%.0f %s", v, units[u])
+	}
+	return fmt.Sprintf("%.1f %s", v, units[u])
+}
+
+func formatRateFixed(v float64) string {
+	units := []string{"B/s", "KB/s", "MB/s", "GB/s"}
+	u := 0
+	for v >= 1024 && u < len(units)-1 {
+		v /= 1024
+		u++
+	}
+	if v > 9999 {
+		v = 9999
+	}
+	// Fixed width: value 6 chars + unit 4 chars.
+	return fmt.Sprintf("%6.1f %-4s", v, units[u])
+}
+
+func truncateByWidth(s string, w int) string {
+	if w <= 0 {
+		return ""
+	}
+	if lipgloss.Width(s) <= w {
+		return s
+	}
+	if w == 1 {
+		return "…"
+	}
+	ellipsis := "…"
+	maxW := w - lipgloss.Width(ellipsis)
+	var b strings.Builder
+	cur := 0
+	for _, r := range s {
+		rw := lipgloss.Width(string(r))
+		if cur+rw > maxW {
+			break
+		}
+		b.WriteRune(r)
+		cur += rw
+	}
+	return b.String() + ellipsis
+}
+
+func composeHeaderLine(left, right string, w int) string {
+	left = strings.TrimSpace(left)
+	right = strings.TrimSpace(right)
+	if w <= 0 {
+		return ""
+	}
+	gap := 2
+	leftW := lipgloss.Width(left)
+	if left == "" {
+		gap = 0
+	}
+	rightW := max(0, w-leftW-gap)
+	if leftW >= w {
+		return truncateByWidth(left, w)
+	}
+	right = truncateByWidth(right, rightW)
+	if left == "" {
+		return lipgloss.NewStyle().Width(w).Align(lipgloss.Right).Render(right)
+	}
+	return left + strings.Repeat(" ", gap) + lipgloss.NewStyle().Width(rightW).Align(lipgloss.Right).Render(right)
 }
 
 func pollCmd(d time.Duration) tea.Cmd {
