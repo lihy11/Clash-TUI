@@ -4,6 +4,8 @@
 
 - `go.mod`：依赖声明
 - `README.md`：项目说明、运行方式、快捷键
+- `LICENSE`：项目主许可证（MIT）
+- `THIRD_PARTY_NOTICES.md`：第三方依赖许可证索引
 - `.goreleaser.yaml`：多平台构建与打包发布配置
 - `scripts/install.sh`：一键安装脚本
 - `.github/workflows/ci.yml`：基础构建校验工作流

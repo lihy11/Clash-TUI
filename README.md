@@ -55,3 +55,17 @@ curl -fsSL https://raw.githubusercontent.com/lihy11/Clash-TUI/main/scripts/insta
 - 工程设计与接口定义：`docs/IMPLEMENTATION.md`
 - 文件索引：`docs/FILE_INDEX.md`
 - 打包配置：`.goreleaser.yaml`
+
+## 相关项目
+
+- Mihomo（内核）：https://github.com/MetaCubeX/mihomo
+- Clash Verge Rev（桌面端参考）：https://github.com/clash-verge-rev/clash-verge-rev
+- ClashX（交互体验参考）：https://github.com/yichengchen/clashX
+- Bubble Tea（TUI 框架）：https://github.com/charmbracelet/bubbletea
+- Bubbles（TUI 组件）：https://github.com/charmbracelet/bubbles
+- Lip Gloss（终端样式）：https://github.com/charmbracelet/lipgloss
+
+## 开源许可证
+
+- 本项目许可证：`MIT`，见 [LICENSE](./LICENSE)
+- 第三方依赖与上游许可证索引：见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)
