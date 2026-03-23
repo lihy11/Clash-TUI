@@ -20,7 +20,7 @@ curl -fsSL https://raw.githubusercontent.com/lihy11/Clash-TUI/main/scripts/insta
 
 1. 打开 Release 页面下载对应系统包（`macOS / Windows / Linux`）。
 2. 安装后运行 `clash-tui`。
-3. 首次启动会自动准备 Mihomo 内核，并进入 TUI。
+3. 首次启动会自动下载并准备 Mihomo 内核（可能需要几十秒），随后进入 TUI。
 
 如果你是开发者，也可以源码启动：
 

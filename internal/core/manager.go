@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -58,6 +59,7 @@ func (m *Manager) EnsureBinary(ctx context.Context) error {
 	if st, err := os.Stat(m.execPath); err == nil && st.Size() > 0 {
 		return nil
 	}
+	log.Printf("mihomo core not found, downloading...")
 	rel, err := fetchLatestRelease(ctx)
 	if err != nil {
 		return err
@@ -66,14 +68,17 @@ func (m *Manager) EnsureBinary(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	log.Printf("downloading core asset: %s", asset.Name)
 	tmp := filepath.Join(filepath.Dir(m.execPath), "mihomo.download")
 	if err := downloadFile(ctx, asset.URL, tmp); err != nil {
 		return err
 	}
+	log.Printf("extracting core binary...")
 	if err := extractBinary(tmp, m.execPath); err != nil {
 		return err
 	}
 	_ = os.Remove(tmp)
+	log.Printf("mihomo core ready: %s", m.execPath)
 	return os.Chmod(m.execPath, 0o755)
 }
 
@@ -177,8 +182,37 @@ func downloadFile(ctx context.Context, src, dst string) error {
 		return err
 	}
 	defer f.Close()
-	_, err = io.Copy(f, resp.Body)
-	return err
+
+	total := resp.ContentLength
+	buf := make([]byte, 256*1024)
+	var downloaded int64
+	start := time.Now()
+	lastLog := time.Time{}
+
+	for {
+		n, readErr := resp.Body.Read(buf)
+		if n > 0 {
+			if _, err := f.Write(buf[:n]); err != nil {
+				return err
+			}
+			downloaded += int64(n)
+
+			now := time.Now()
+			if lastLog.IsZero() || now.Sub(lastLog) >= 500*time.Millisecond {
+				logDownloadProgress(downloaded, total, now.Sub(start))
+				lastLog = now
+			}
+		}
+
+		if readErr == io.EOF {
+			logDownloadProgress(downloaded, total, time.Since(start))
+			log.Printf("download complete")
+			return nil
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
 }
 
 func extractBinary(src, dst string) error {
@@ -236,4 +270,31 @@ func extractFromGzip(src, dst string) error {
 	defer out.Close()
 	_, err = io.Copy(out, gz)
 	return err
+}
+
+func logDownloadProgress(done, total int64, elapsed time.Duration) {
+	sec := elapsed.Seconds()
+	if sec <= 0 {
+		sec = 0.001
+	}
+	speed := float64(done) / sec
+	if total > 0 {
+		pct := float64(done) * 100 / float64(total)
+		log.Printf("download progress: %5.1f%% (%s/%s) %s/s", pct, formatBytes(done), formatBytes(total), formatBytes(int64(speed)))
+		return
+	}
+	log.Printf("download progress: %s %s/s", formatBytes(done), formatBytes(int64(speed)))
+}
+
+func formatBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%dB", n)
+	}
+	div, exp := int64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f%ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }

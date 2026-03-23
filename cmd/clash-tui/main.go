@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -21,8 +22,14 @@ func main() {
 	if err != nil {
 		log.Fatalf("init runtime failed: %v", err)
 	}
-	if err := rt.Boot(context.Background(), &cfg); err != nil {
+	log.Printf("preparing runtime (may download mihomo core on first run)...")
+	bootCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	if err := rt.Boot(bootCtx, &cfg); err != nil {
 		log.Printf("boot runtime warning: %v", err)
+		log.Printf("continue launching TUI; you can reconfigure in Settings/Profiles")
+	} else {
+		log.Printf("runtime ready")
 	}
 	defer rt.Close()
 
