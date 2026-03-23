@@ -20,7 +20,7 @@ curl -fsSL https://raw.githubusercontent.com/lihy11/Clash-TUI/main/scripts/insta
 
 1. 打开 Release 页面下载对应系统包（`macOS / Windows / Linux`）。
 2. 安装后运行 `clash-tui`。
-3. 首次启动会自动下载并准备 Mihomo 内核（可能需要几十秒），随后进入 TUI。
+3. 启动时会先探测本机已运行的 Clash/Mihomo 控制器（如 `127.0.0.1:9090`），可用则直接连接并自动导入已有 `proxy-providers` 订阅；否则会自动下载并准备 Mihomo 内核（首次可能需要几十秒）。
 
 如果你是开发者，也可以源码启动：
 
@@ -32,15 +32,17 @@ go run ./cmd/clash-tui
 ## 怎么使用
 
 - `Overview`：查看状态，切换 `Rule/Global/Direct`。
-- `Proxies`：选择代理组与节点，支持单节点测速和一键测速。
+- `Network`：在 `Proxies / Rules / Connections` 子页间切换操作。
 - `Profiles`：导入订阅、更新当前订阅、更新全部订阅。
-- `Connections`：查看并关闭活跃连接。
-- `Settings`：修改控制器地址、密钥、轮询参数。
+- `System`：在 `Logs / Settings` 子页间切换。
 
 常用快捷键：
 - `q` 退出
 - `tab` / `shift+tab` 切页
-- `1-7` 快速跳页
+- `1-4` 快速跳页
+- `[` / `]` 在当前主域切换子页
+- `:` 或 `Ctrl+K` 打开命令面板
+- `F2` 切换主题
 
 ## 许可证
 
