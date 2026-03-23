@@ -4,6 +4,10 @@
 
 - `go.mod`：依赖声明
 - `README.md`：项目说明、运行方式、快捷键
+- `.goreleaser.yaml`：多平台构建与打包发布配置
+- `scripts/install.sh`：一键安装脚本
+- `.github/workflows/ci.yml`：基础构建校验工作流
+- `.github/workflows/release.yml`：Tag 触发的自动发布工作流
 - `docs/IMPLEMENTATION.md`：实现设计与接口定义
 - `docs/FILE_INDEX.md`：本文件
 
@@ -33,12 +37,22 @@
   - 代理模式切换、节点切换、连接管理等接口实现
   - `/logs` websocket 连接与读取
 
+## 运行时编排层
+
+- `internal/subscription/manager.go`
+  - 订阅导入与持久化（`subscriptions.yaml`）
+  - 生成 Mihomo 配置（proxy-providers/groups/rules）
+- `internal/core/manager.go`
+  - Mihomo 内核下载、解压、启动、重启
+- `internal/runtime/manager.go`
+  - 启动编排（boot）与配置变更后重载（reload）
+
 ## UI 层
 
 - `internal/ui/styles.go`
   - 主题样式、面板/标签/状态等样式定义
 - `internal/ui/app.go`
   - Bubble Tea 主 model
-  - 页面渲染（Overview/Proxies/Connections/Rules/Logs/Settings）
+  - 页面渲染（Overview/Proxies/Connections/Rules/Logs/Profiles/Settings）
   - 快捷键与鼠标处理
   - 轮询调度与消息处理

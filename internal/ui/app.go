@@ -14,9 +14,11 @@ import (
 
 	"clash-tui/internal/config"
 	"clash-tui/internal/mihomo"
+	"clash-tui/internal/runtime"
+	"clash-tui/internal/subscription"
 )
 
-var tabs = []string{"Overview", "Proxies", "Connections", "Rules", "Logs", "Settings"}
+var tabs = []string{"Overview", "Proxies", "Connections", "Rules", "Logs", "Profiles", "Settings"}
 
 type errMsg struct{ err error }
 type versionMsg struct{ v mihomo.VersionResponse }
@@ -51,6 +53,15 @@ type logMsg struct{ log mihomo.LogEvent }
 type logErrMsg struct{ err error }
 type retryLogMsg struct{}
 type tickMsg time.Time
+type subsMsg struct{ items []subscription.Item }
+type importSubMsg struct {
+	item subscription.Item
+	err  error
+}
+type updateSubMsg struct {
+	name string
+	err  error
+}
 
 type clickTarget struct {
 	x1   int
@@ -75,6 +86,7 @@ type model struct {
 
 	cfg    config.Settings
 	client *mihomo.Client
+	rt     *runtime.Manager
 
 	version string
 	baseCfg mihomo.ConfigResponse
@@ -104,6 +116,12 @@ type model struct {
 
 	settingsInputs []textinput.Model
 	settingsFocus  int
+	subscriptions  []subscription.Item
+	profileCursor  int
+	importing      bool
+	importName     textinput.Model
+	importURL      textinput.Model
+	importFocus    int
 
 	bodyY int
 	bodyW int
@@ -116,12 +134,13 @@ type model struct {
 	proxyNodeTargets    []clickTarget
 }
 
-func NewModel(cfg config.Settings) *model {
+func NewModel(cfg config.Settings, rt *runtime.Manager) *model {
 	client, err := mihomo.NewClient(cfg.Endpoint, cfg.Secret)
 	m := &model{
 		styles:         defaultStyles(),
 		cfg:            cfg,
 		client:         client,
+		rt:             rt,
 		tab:            0,
 		proxies:        map[string]mihomo.Proxy{},
 		delayMap:       map[string]int{},
@@ -131,6 +150,7 @@ func NewModel(cfg config.Settings) *model {
 		providersState: map[string]mihomo.Provider{},
 	}
 	m.initSettingsInputs()
+	m.initImportInputs()
 	if err != nil {
 		m.lastErr = err
 		m.status = "init client failed"
@@ -146,6 +166,7 @@ func (m *model) Init() tea.Cmd {
 		fetchRulesCmd(m.client),
 		fetchConnectionsCmd(m.client),
 		fetchProvidersCmd(m.client),
+		loadSubsCmd(m.rt),
 		pollCmd(m.cfg.PollInterval),
 		listenLogCmd(m.client, m.cfg.LogLevel),
 	)
@@ -190,6 +211,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case 4:
 			return m, m.handleLogKeys(msg)
 		case 5:
+			return m, m.handleProfilesKeys(msg)
+		case 6:
 			return m, m.handleSettingsKeys(msg)
 		}
 	case versionMsg:
@@ -221,6 +244,40 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		sort.Strings(m.providers)
 		m.providerCursor = clamp(m.providerCursor, 0, max(0, len(m.providers)-1))
 		m.lastErr = nil
+	case subsMsg:
+		m.subscriptions = msg.items
+		m.profileCursor = clamp(m.profileCursor, 0, max(0, len(m.subscriptions)-1))
+		m.lastErr = nil
+	case importSubMsg:
+		if msg.err != nil {
+			m.lastErr = msg.err
+			m.status = "import subscription failed"
+		} else {
+			m.status = "subscription imported"
+			m.importing = false
+			m.lastErr = nil
+		}
+		cmds := []tea.Cmd{loadSubsCmd(m.rt)}
+		if m.rt != nil {
+			cmds = append(cmds,
+				reloadCoreCmd(m.rt, m.cfg),
+				fetchVersionCmd(m.client),
+				fetchConfigCmd(m.client),
+				fetchProxiesCmd(m.client),
+				fetchProvidersCmd(m.client),
+				listenLogCmd(m.client, m.cfg.LogLevel),
+			)
+		}
+		return m, tea.Batch(cmds...)
+	case updateSubMsg:
+		if msg.err != nil {
+			m.lastErr = msg.err
+			m.status = "update subscription failed"
+		} else {
+			m.status = "subscription updated"
+			m.lastErr = nil
+		}
+		return m, loadSubsCmd(m.rt)
 	case modeSetMsg:
 		if msg.err != nil {
 			m.lastErr = msg.err
@@ -311,7 +368,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	var cmd tea.Cmd
-	if m.tab == 5 {
+	if m.tab == 6 {
 		for i := range m.settingsInputs {
 			if i == m.settingsFocus {
 				m.settingsInputs[i].Focus()
@@ -320,6 +377,21 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.settingsInputs[i], cmd = m.settingsInputs[i].Update(msg)
 		}
+	}
+	if m.tab == 5 && m.importing {
+		for i := 0; i < 2; i++ {
+			if i == m.importFocus {
+				if i == 0 {
+					m.importName.Focus()
+					m.importURL.Blur()
+				} else {
+					m.importURL.Focus()
+					m.importName.Blur()
+				}
+			}
+		}
+		m.importName, _ = m.importName.Update(msg)
+		m.importURL, _ = m.importURL.Update(msg)
 	}
 	return m, cmd
 }
@@ -538,6 +610,51 @@ func (m *model) handleSettingsKeys(msg tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
+func (m *model) handleProfilesKeys(msg tea.KeyMsg) tea.Cmd {
+	if m.importing {
+		switch msg.String() {
+		case "esc":
+			m.importing = false
+			return nil
+		case "tab":
+			m.importFocus = (m.importFocus + 1) % 2
+			return nil
+		case "shift+tab":
+			m.importFocus = (m.importFocus + 1) % 2
+			return nil
+		case "enter":
+			return importSubCmd(m.rt, m.importName.Value(), m.importURL.Value())
+		}
+		return nil
+	}
+
+	switch msg.String() {
+	case "up", "k":
+		m.profileCursor = clamp(m.profileCursor-1, 0, max(0, len(m.subscriptions)-1))
+	case "down", "j":
+		m.profileCursor = clamp(m.profileCursor+1, 0, max(0, len(m.subscriptions)-1))
+	case "i":
+		m.importing = true
+		m.importFocus = 1
+		m.importName.SetValue("")
+		m.importURL.SetValue("")
+	case "u":
+		if len(m.subscriptions) > 0 {
+			it := m.subscriptions[m.profileCursor]
+			return updateProviderCmd2(m.client, it.ProviderName)
+		}
+	case "U":
+		if len(m.subscriptions) > 0 {
+			cmds := make([]tea.Cmd, 0, len(m.subscriptions))
+			for _, it := range m.subscriptions {
+				cmds = append(cmds, updateProviderCmd2(m.client, it.ProviderName))
+			}
+			return tea.Batch(cmds...)
+		}
+	}
+	return nil
+}
+
 func (m *model) applySettings() tea.Cmd {
 	pollSec, err := strconv.Atoi(strings.TrimSpace(m.settingsInputs[2].Value()))
 	if err != nil || pollSec < 1 {
@@ -578,6 +695,8 @@ func (m *model) applySettings() tea.Cmd {
 		fetchRulesCmd(m.client),
 		fetchConnectionsCmd(m.client),
 		fetchProvidersCmd(m.client),
+		loadSubsCmd(m.rt),
+		reloadCoreCmd(m.rt, m.cfg),
 		listenLogCmd(m.client, m.cfg.LogLevel),
 	)
 }
@@ -617,6 +736,8 @@ func (m *model) renderBody(bodyW, bodyH int) string {
 	case 4:
 		return m.renderLogs(bodyW, bodyH)
 	case 5:
+		return m.renderProfiles(bodyW, bodyH)
+	case 6:
 		return m.renderSettings(bodyW, bodyH)
 	default:
 		return ""
@@ -833,6 +954,47 @@ func (m *model) renderLogs(w, h int) string {
 	return m.renderPanel(w, h, strings.Join(lines, "\n"))
 }
 
+func (m *model) renderProfiles(w, h int) string {
+	lines := []string{
+		m.styles.panelTitle.Render("Profiles / Subscriptions"),
+		m.styles.subtle.Render("i: import   u: update selected   U: update all"),
+		"",
+	}
+	if len(m.subscriptions) == 0 {
+		lines = append(lines, "No subscriptions. Press i to import.")
+	} else {
+		for i, s := range m.subscriptions {
+			state := "enabled"
+			if !s.Enabled {
+				state = "disabled"
+			}
+			line := fmt.Sprintf("%s  [%s]  provider=%s", s.Name, state, s.ProviderName)
+			if i == m.profileCursor {
+				line = m.styles.cursor.Render(line)
+			}
+			lines = append(lines, line)
+			if !s.LastUpdated.IsZero() {
+				lines = append(lines, m.styles.subtle.Render("  updated: "+s.LastUpdated.Format(time.RFC3339)))
+			}
+			if s.LastError != "" {
+				lines = append(lines, m.styles.errorText.Render("  error: "+s.LastError))
+			}
+		}
+	}
+
+	if m.importing {
+		lines = append(lines, "")
+		lines = append(lines, m.styles.panelTitle.Render("Import Subscription"))
+		lines = append(lines, "Name (optional)")
+		lines = append(lines, m.importName.View())
+		lines = append(lines, "URL")
+		lines = append(lines, m.importURL.View())
+		lines = append(lines, m.styles.subtle.Render("Enter: confirm  Esc: cancel"))
+	}
+
+	return m.renderPanel(w, h, strings.Join(lines, "\n"))
+}
+
 func (m *model) renderSettings(w, h int) string {
 	lines := []string{
 		m.styles.panelTitle.Render("Settings"),
@@ -861,6 +1023,9 @@ func (m *model) renderFooter(w int) string {
 		msg = "Ready"
 	}
 	help := "q quit | tab switch page | 1-6 jump | mouse click tabs"
+	if len(tabs) > 6 {
+		help = "q quit | tab switch page | 1-7 jump | mouse click tabs"
+	}
 	line := m.styles.footer.Render(msg + "  |  " + help)
 	return lipgloss.NewStyle().Width(w).MaxWidth(w).Render(line)
 }
@@ -916,11 +1081,25 @@ func (m *model) initSettingsInputs() {
 	m.settingsInputs[0].Focus()
 }
 
+func (m *model) initImportInputs() {
+	m.importName = textinput.New()
+	m.importName.Prompt = "> "
+	m.importName.Placeholder = "optional name"
+	m.importName.Width = 60
+
+	m.importURL = textinput.New()
+	m.importURL.Prompt = "> "
+	m.importURL.Placeholder = "https://example.com/subscription"
+	m.importURL.Width = 60
+}
+
 func (m *model) resizeInputs() {
 	w := max(24, m.width-10)
 	for i := range m.settingsInputs {
 		m.settingsInputs[i].Width = w
 	}
+	m.importName.Width = w
+	m.importURL.Width = w
 }
 
 func (m *model) proxyPanels(w, h int) (leftX, leftY, leftW, leftH, rightX, rightY, rightW, rightH int) {
@@ -1237,6 +1416,55 @@ func updateProviderCmd(c *mihomo.Client, name string) tea.Cmd {
 		defer cancel()
 		err := c.UpdateProxyProvider(ctx, name)
 		return providersUpdatedMsg{name: name, err: err}
+	}
+}
+
+func updateProviderCmd2(c *mihomo.Client, name string) tea.Cmd {
+	return func() tea.Msg {
+		if c == nil {
+			return updateSubMsg{name: name, err: fmt.Errorf("mihomo client unavailable")}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+		defer cancel()
+		err := c.UpdateProxyProvider(ctx, name)
+		return updateSubMsg{name: name, err: err}
+	}
+}
+
+func loadSubsCmd(rt *runtime.Manager) tea.Cmd {
+	return func() tea.Msg {
+		if rt == nil {
+			return subsMsg{items: []subscription.Item{}}
+		}
+		items, err := rt.Subscriptions().Load()
+		if err != nil {
+			return errMsg{err}
+		}
+		return subsMsg{items: items}
+	}
+}
+
+func importSubCmd(rt *runtime.Manager, name, rawURL string) tea.Cmd {
+	return func() tea.Msg {
+		if rt == nil {
+			return importSubMsg{err: fmt.Errorf("runtime unavailable")}
+		}
+		item, err := rt.Subscriptions().Import(name, rawURL)
+		return importSubMsg{item: item, err: err}
+	}
+}
+
+func reloadCoreCmd(rt *runtime.Manager, cfg config.Settings) tea.Cmd {
+	return func() tea.Msg {
+		if rt == nil {
+			return nil
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+		defer cancel()
+		if err := rt.ReloadCore(ctx, cfg); err != nil {
+			return errMsg{err}
+		}
+		return nil
 	}
 }
 

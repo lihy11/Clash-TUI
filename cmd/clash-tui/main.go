@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"log"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"clash-tui/internal/config"
+	"clash-tui/internal/runtime"
 	"clash-tui/internal/ui"
 )
 
@@ -15,7 +17,16 @@ func main() {
 		log.Fatalf("load config failed: %v", err)
 	}
 
-	m := ui.NewModel(cfg)
+	rt, err := runtime.New()
+	if err != nil {
+		log.Fatalf("init runtime failed: %v", err)
+	}
+	if err := rt.Boot(context.Background(), &cfg); err != nil {
+		log.Printf("boot runtime warning: %v", err)
+	}
+	defer rt.Close()
+
+	m := ui.NewModel(cfg, rt)
 	p := tea.NewProgram(
 		m,
 		tea.WithAltScreen(),

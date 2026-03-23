@@ -19,6 +19,9 @@ type Settings struct {
 	Secret       string        `yaml:"secret"`
 	PollInterval time.Duration `yaml:"poll_interval"`
 	LogLevel     string        `yaml:"log_level"`
+	ManageCore   bool          `yaml:"manage_core"`
+	CoreVersion  string        `yaml:"core_version"`
+	MixedPort    int           `yaml:"mixed_port"`
 }
 
 func Default() Settings {
@@ -27,6 +30,9 @@ func Default() Settings {
 		Secret:       "",
 		PollInterval: defaultPollInterval,
 		LogLevel:     "info",
+		ManageCore:   true,
+		CoreVersion:  "latest",
+		MixedPort:    7890,
 	}
 }
 
@@ -70,6 +76,9 @@ func Load() (Settings, error) {
 	if cfg.LogLevel == "" {
 		cfg.LogLevel = "info"
 	}
+	if cfg.MixedPort == 0 {
+		cfg.MixedPort = 7890
+	}
 	return cfg, nil
 }
 
@@ -86,4 +95,20 @@ func Save(cfg Settings) error {
 		return err
 	}
 	return os.WriteFile(p, b, 0o644)
+}
+
+func ConfigDir() (string, error) {
+	base, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, "clash-tui"), nil
+}
+
+func DataDir() (string, error) {
+	base, err := os.UserCacheDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, "clash-tui"), nil
 }

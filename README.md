@@ -1,6 +1,6 @@
 # clash-tui
 
-`clash-tui` 是一个基于 `Go + Bubble Tea` 的 Mihomo/Clash 终端 UI，目标是尽量对齐 ClashX / Clash Verge 的高频操作体验：代理模式切换、代理组节点切换、连接管理、规则查看、日志查看、控制器配置。
+`clash-tui` 是一个基于 `Go + Bubble Tea` 的 Mihomo/Clash 终端 UI，目标是尽量对齐 ClashX / Clash Verge 的高频操作体验：代理模式切换、代理组节点切换、连接管理、规则查看、日志查看、订阅导入更新、控制器配置。
 
 ## 功能范围
 
@@ -9,24 +9,25 @@
 - Connections：查看当前连接、关闭单条/全部连接
 - Rules：规则列表滚动查看
 - Logs：`/logs` 实时日志流
+- Profiles：导入订阅、更新当前订阅、更新全部订阅
 - Settings：控制器地址/密钥/轮询频率/日志级别配置与持久化
 
 ## 运行要求
 
 - Go `1.22+`
-- 已运行的 Mihomo/Clash 内核，且启用 external controller
-- 推荐配置示例（mihomo）：
-
-```yaml
-external-controller: 127.0.0.1:9090
-secret: "your-secret"
-```
+- 网络可访问 GitHub Releases（首次自动下载 Mihomo 内核时需要）
 
 ## 安装与启动
 
 ```bash
 go mod tidy
 go run ./cmd/clash-tui
+```
+
+发布后的一键安装（替换仓库地址）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/lihy11/Clash-TUI/main/scripts/install.sh | sh
 ```
 
 可选环境变量：
@@ -36,7 +37,7 @@ go run ./cmd/clash-tui
 
 ## 快捷键
 
-- 全局：`q` 退出，`tab`/`shift+tab` 切页，`1-6` 直达页面，鼠标点击顶部标签切页
+- 全局：`q` 退出，`tab`/`shift+tab` 切页，`1-7` 直达页面，鼠标点击顶部标签切页
 - Overview：`r`/`g`/`d` 切换 Rule/Global/Direct
 - Overview：鼠标可点 `Switch: [✓/○ Rule|Global|Direct]` 按钮切换模式
 - Overview：`j/k` 选择 provider，`u` 更新 provider
@@ -46,9 +47,11 @@ go run ./cmd/clash-tui
 - Connections：`x` 关闭当前连接，`X` 关闭全部连接
 - Rules：`j/k` 或 `↑/↓` 滚动
 - Logs：`c` 清空日志
+- Profiles：`i` 导入订阅，`u` 更新当前订阅，`U` 更新全部订阅
 - Settings：`tab`/`shift+tab` 切换输入项，`s` 保存并重连
 
 ## 文档
 
 - 工程设计与接口定义：`docs/IMPLEMENTATION.md`
 - 文件索引：`docs/FILE_INDEX.md`
+- 打包配置：`.goreleaser.yaml`
