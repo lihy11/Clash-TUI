@@ -23,7 +23,7 @@ func main() {
 		log.Fatalf("init runtime failed: %v", err)
 	}
 	log.Printf("preparing runtime (may download mihomo core on first run)...")
-	bootCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	bootCtx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 	if err := rt.Boot(bootCtx, &cfg); err != nil {
 		log.Printf("boot runtime warning: %v", err)

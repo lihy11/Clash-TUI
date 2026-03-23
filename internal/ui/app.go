@@ -159,14 +159,15 @@ type model struct {
 	bodyW int
 	bodyH int
 
-	mainTabTargets      []clickTarget
-	networkTabTargets   []clickTarget
-	systemTabTargets    []clickTarget
-	overviewModeTargets []clickTarget
-	proxyModeTargets    []clickTarget
-	proxyActionTarget   []clickTarget
-	proxyGroupTargets   []clickTarget
-	proxyNodeTargets    []clickTarget
+	mainTabTargets       []clickTarget
+	networkTabTargets    []clickTarget
+	systemTabTargets     []clickTarget
+	profileImportTargets []clickTarget
+	overviewModeTargets  []clickTarget
+	proxyModeTargets     []clickTarget
+	proxyActionTarget    []clickTarget
+	proxyGroupTargets    []clickTarget
+	proxyNodeTargets     []clickTarget
 }
 
 func NewModel(cfg config.Settings, rt *runtime.Manager) *model {
@@ -216,6 +217,7 @@ func (m *model) Init() tea.Cmd {
 }
 
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var deferredCmd tea.Cmd
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -272,14 +274,22 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if cmd := m.handleProxyMouse(msg.X, msg.Y); cmd != nil {
 					return m, cmd
 				}
+			} else if m.tab == 2 && m.importing {
+				if cmd := m.handleProfilesMouse(msg.X, msg.Y); cmd != nil {
+					return m, cmd
+				}
 			}
 		}
 	case tea.KeyMsg:
 		if m.paletteOpen {
 			return m, m.handlePaletteKeys(msg)
 		}
-		if cmd := m.handleGlobalKeys(msg); cmd != nil {
-			return m, cmd
+		if m.tab == 2 && m.importing {
+			deferredCmd = m.handleProfilesKeys(msg)
+		} else {
+			if cmd := m.handleGlobalKeys(msg); cmd != nil {
+				return m, cmd
+			}
 		}
 		switch m.tab {
 		case 0:
@@ -294,12 +304,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.handleConnectionKeys(msg)
 			}
 		case 2:
-			return m, m.handleProfilesKeys(msg)
+			if !m.importing {
+				return m, m.handleProfilesKeys(msg)
+			}
 		case 3:
 			if m.systemTab == 0 {
 				return m, m.handleLogKeys(msg)
 			}
-			return m, m.handleSettingsKeys(msg)
+			deferredCmd = m.handleSettingsKeys(msg)
 		}
 	case versionMsg:
 		m.version = msg.v.Version
@@ -389,6 +401,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, fetchProxiesCmd(m.client)
 	case delayMsg:
 		if msg.err != nil {
+			m.delayMap[msg.name] = -1
 			m.lastErr = msg.err
 			m.setStatus("delay test failed")
 		} else {
@@ -454,7 +467,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 	}
 
-	var cmd tea.Cmd
+	cmds := make([]tea.Cmd, 0, 6)
+	if deferredCmd != nil {
+		cmds = append(cmds, deferredCmd)
+	}
 	if m.tab == 3 && m.systemTab == 1 {
 		for i := range m.settingsInputs {
 			if i == m.settingsFocus {
@@ -462,25 +478,35 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.settingsInputs[i].Blur()
 			}
-			m.settingsInputs[i], cmd = m.settingsInputs[i].Update(msg)
+			var c tea.Cmd
+			m.settingsInputs[i], c = m.settingsInputs[i].Update(msg)
+			if c != nil {
+				cmds = append(cmds, c)
+			}
 		}
 	}
 	if m.tab == 2 && m.importing {
-		for i := 0; i < 2; i++ {
-			if i == m.importFocus {
-				if i == 0 {
-					m.importName.Focus()
-					m.importURL.Blur()
-				} else {
-					m.importURL.Focus()
-					m.importName.Blur()
-				}
-			}
+		if m.importFocus == 0 {
+			m.importName.Focus()
+			m.importURL.Blur()
+		} else {
+			m.importURL.Focus()
+			m.importName.Blur()
 		}
-		m.importName, _ = m.importName.Update(msg)
-		m.importURL, _ = m.importURL.Update(msg)
+		var c1, c2 tea.Cmd
+		m.importName, c1 = m.importName.Update(msg)
+		m.importURL, c2 = m.importURL.Update(msg)
+		if c1 != nil {
+			cmds = append(cmds, c1)
+		}
+		if c2 != nil {
+			cmds = append(cmds, c2)
+		}
 	}
-	return m, cmd
+	if len(cmds) == 0 {
+		return m, nil
+	}
+	return m, tea.Batch(cmds...)
 }
 
 func (m *model) View() string {
@@ -635,6 +661,16 @@ func (m *model) handleOverviewMouse(x, y int) tea.Cmd {
 	return nil
 }
 
+func (m *model) handleProfilesMouse(x, y int) tea.Cmd {
+	for _, t := range m.profileImportTargets {
+		if t.hit(x, y) {
+			m.importFocus = clamp(t.idx, 0, 1)
+			return nil
+		}
+	}
+	return nil
+}
+
 func (m *model) handleProxyMouse(x, y int) tea.Cmd {
 	for _, t := range m.proxyModeTargets {
 		if t.hit(x, y) {
@@ -738,11 +774,17 @@ func (m *model) handleProfilesKeys(msg tea.KeyMsg) tea.Cmd {
 		case "esc":
 			m.importing = false
 			return nil
+		case "up", "k":
+			m.importFocus = (m.importFocus - 1 + 2) % 2
+			return nil
+		case "down", "j":
+			m.importFocus = (m.importFocus + 1) % 2
+			return nil
 		case "tab":
 			m.importFocus = (m.importFocus + 1) % 2
 			return nil
 		case "shift+tab":
-			m.importFocus = (m.importFocus + 1) % 2
+			m.importFocus = (m.importFocus - 1 + 2) % 2
 			return nil
 		case "enter":
 			return importSubCmd(m.rt, m.importName.Value(), m.importURL.Value())
@@ -1126,8 +1168,11 @@ func (m *model) renderProxies(w, h int) string {
 	end := min(len(m.nodes), start+maxNodeRows)
 	for i := start; i < end; i++ {
 		n := m.nodes[i]
-		delayCell := m.renderDelayCell(n)
-		line := fmt.Sprintf("%-34s %s", n, delayCell)
+		innerW := max(1, rightW-m.styles.panel.GetHorizontalFrameSize())
+		delayW := 18
+		nameW := max(10, innerW-delayW-1)
+		delayCell := m.renderDelayCell(n, delayW)
+		line := fitTextWidth(n, nameW) + " " + delayCell
 		if n == now {
 			line = m.styles.selected.Render("★ " + line)
 		}
@@ -1216,6 +1261,8 @@ func (m *model) renderLogs(w, h int) string {
 }
 
 func (m *model) renderProfiles(w, h int) string {
+	m.profileImportTargets = nil
+
 	lines := []string{
 		m.styles.panelTitle.Render("Profiles / Subscriptions"),
 		m.styles.subtle.Render("i: import   u: update selected   U: update all"),
@@ -1244,6 +1291,9 @@ func (m *model) renderProfiles(w, h int) string {
 	}
 
 	if m.importing {
+		contentX, contentY := m.panelContentOrigin(0, m.bodyY)
+		contentW := max(1, w-m.styles.panel.GetHorizontalFrameSize())
+		base := len(lines)
 		lines = append(lines, "")
 		lines = append(lines, m.styles.panelTitle.Render("Import Subscription"))
 		lines = append(lines, "Name (optional)")
@@ -1251,6 +1301,22 @@ func (m *model) renderProfiles(w, h int) string {
 		lines = append(lines, "URL")
 		lines = append(lines, m.importURL.View())
 		lines = append(lines, m.styles.subtle.Render("Enter: confirm  Esc: cancel"))
+		m.profileImportTargets = append(m.profileImportTargets,
+			clickTarget{
+				x1:  contentX,
+				y1:  contentY + base + 3,
+				x2:  contentX + contentW,
+				y2:  contentY + base + 4,
+				idx: 0,
+			},
+			clickTarget{
+				x1:  contentX,
+				y1:  contentY + base + 5,
+				x2:  contentX + contentW,
+				y2:  contentY + base + 6,
+				idx: 1,
+			},
+		)
 	}
 
 	return m.renderPanel(w, h, strings.Join(lines, "\n"))
@@ -1730,9 +1796,12 @@ func (m *model) renderOverviewModeLine(contentX, y int) string {
 
 func (m *model) renderProxyActionLine(contentX, y int) string {
 	prefix := "Action: "
-	button := "[⚡ Test All]"
+	// 使用 styles.action 渲染按钮，让它看起来像一个真实的按钮块
+	button := m.styles.action.Render(" ⚡ Test All (T) ")
+	
 	startX := contentX + lipgloss.Width(prefix)
 	endX := startX + lipgloss.Width(button)
+	
 	m.proxyActionTarget = append(m.proxyActionTarget, clickTarget{
 		x1:   startX,
 		y1:   y,
@@ -1740,6 +1809,7 @@ func (m *model) renderProxyActionLine(contentX, y int) string {
 		y2:   y + 1,
 		text: "test_all",
 	})
+	
 	return prefix + button
 }
 
@@ -1779,23 +1849,30 @@ func (m *model) renderPanelFocused(outerW, outerH int, content string, focused b
 		Render(content)
 }
 
-func (m *model) renderDelayCell(node string) string {
+func (m *model) renderDelayCell(node string, cellW int) string {
 	delay, ok := m.delayMap[node]
-	if !ok || delay <= 0 {
-		return m.styles.subtle.Render("⚪ timeout")
+	if !ok {
+		return m.styles.subtle.Render(fitTextWidth("○", cellW))
+	}
+	if delay < 0 {
+		return m.styles.subtle.Render(fitTextWidth("○ Timeout", cellW))
+	}
+	if delay == 0 {
+		return m.styles.subtle.Render(fitTextWidth("○", cellW))
 	}
 	var color, dot string
 	var bars int
 	switch {
 	case delay < 100:
-		color, dot, bars = themes[m.themeIndex].Success, "🟢", 2
+		color, dot, bars = themes[m.themeIndex].Success, "●", 2
 	case delay <= 300:
-		color, dot, bars = themes[m.themeIndex].Warning, "🟡", 4
+		color, dot, bars = themes[m.themeIndex].Warning, "●", 4
 	default:
-		color, dot, bars = themes[m.themeIndex].Error, "🔴", 6
+		color, dot, bars = themes[m.themeIndex].Error, "●", 6
 	}
 	bar := strings.Repeat("▮", bars)
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(fmt.Sprintf("%s %s %4dms", dot, bar, delay))
+	cell := fmt.Sprintf("%s %-6s %4dms", dot, bar, delay)
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(fitTextWidth(cell, cellW))
 }
 
 func (m *model) updateThroughput(conns []mihomo.Connection) {
@@ -1880,6 +1957,18 @@ func truncateByWidth(s string, w int) string {
 		cur += rw
 	}
 	return b.String() + ellipsis
+}
+
+func fitTextWidth(s string, w int) string {
+	if w <= 0 {
+		return ""
+	}
+	out := truncateByWidth(s, w)
+	cur := lipgloss.Width(out)
+	if cur < w {
+		out += strings.Repeat(" ", w-cur)
+	}
+	return out
 }
 
 func composeHeaderLine(left, right string, w int) string {

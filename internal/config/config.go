@@ -106,9 +106,13 @@ func ConfigDir() (string, error) {
 }
 
 func DataDir() (string, error) {
-	base, err := os.UserCacheDir()
+	if v := os.Getenv("CLASH_TUI_DATA_DIR"); v != "" {
+		return v, nil
+	}
+	// Use config directory for runtime assets to avoid cache cleanups causing re-downloads.
+	base, err := os.UserConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(base, "clash-tui"), nil
+	return filepath.Join(base, "clash-tui", "runtime"), nil
 }

@@ -192,8 +192,9 @@ func defaultStyles(themeIdx int) styles {
 			Foreground(lipgloss.Color(t.PillText)).
 			Background(lipgloss.Color(t.Primary)),
 		action: lipgloss.NewStyle().
-			Foreground(lipgloss.Color(t.PillText)).
-			Background(lipgloss.Color(t.Accent)).
+			Foreground(lipgloss.Color(t.CursorText)).
+			Background(lipgloss.Color(t.Primary)).
+			Bold(true).
 			Padding(0, 1),
 		overlay: lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).

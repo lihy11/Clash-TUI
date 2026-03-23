@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -48,11 +50,13 @@ func NewManager(dataDir string) (*Manager, error) {
 	if runtime.GOOS == "windows" {
 		name += ".exe"
 	}
-	return &Manager{
+	m := &Manager{
 		dataDir:    dataDir,
 		execPath:   filepath.Join(coreDir, name),
 		configPath: filepath.Join(dataDir, "mihomo-config.yaml"),
-	}, nil
+	}
+	m.tryMigrateLegacyBinary(name)
+	return m, nil
 }
 
 func (m *Manager) EnsureBinary(ctx context.Context) error {
@@ -69,7 +73,7 @@ func (m *Manager) EnsureBinary(ctx context.Context) error {
 		return err
 	}
 	log.Printf("downloading core asset: %s", asset.Name)
-	tmp := filepath.Join(filepath.Dir(m.execPath), "mihomo.download")
+	tmp := filepath.Join(filepath.Dir(m.execPath), "mihomo.download.part")
 	if err := downloadFile(ctx, asset.URL, tmp); err != nil {
 		return err
 	}
@@ -80,6 +84,36 @@ func (m *Manager) EnsureBinary(ctx context.Context) error {
 	_ = os.Remove(tmp)
 	log.Printf("mihomo core ready: %s", m.execPath)
 	return os.Chmod(m.execPath, 0o755)
+}
+
+func (m *Manager) tryMigrateLegacyBinary(binName string) {
+	if st, err := os.Stat(m.execPath); err == nil && st.Size() > 0 {
+		return
+	}
+	cacheBase, err := os.UserCacheDir()
+	if err != nil {
+		return
+	}
+	oldPath := filepath.Join(cacheBase, "clash-tui", "core", binName)
+	st, err := os.Stat(oldPath)
+	if err != nil || st.Size() <= 0 {
+		return
+	}
+	in, err := os.Open(oldPath)
+	if err != nil {
+		return
+	}
+	defer in.Close()
+	out, err := os.Create(m.execPath)
+	if err != nil {
+		return
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, in); err != nil {
+		return
+	}
+	_ = os.Chmod(m.execPath, 0o755)
+	log.Printf("migrated existing core binary from cache: %s", oldPath)
 }
 
 func (m *Manager) WriteConfig(content string) error {
@@ -165,9 +199,17 @@ func pickAsset(assets []releaseAsset) (releaseAsset, error) {
 }
 
 func downloadFile(ctx context.Context, src, dst string) error {
+	startAt := int64(0)
+	if st, err := os.Stat(dst); err == nil && st.Size() > 0 {
+		startAt = st.Size()
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, src, nil)
 	if err != nil {
 		return err
+	}
+	if startAt > 0 {
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", startAt))
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -177,17 +219,30 @@ func downloadFile(ctx context.Context, src, dst string) error {
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("download asset failed: %s", resp.Status)
 	}
-	f, err := os.Create(dst)
+
+	appendMode := resp.StatusCode == http.StatusPartialContent && startAt > 0
+	if resp.StatusCode == http.StatusOK && startAt > 0 {
+		startAt = 0
+	}
+
+	var f *os.File
+	if appendMode {
+		f, err = os.OpenFile(dst, os.O_WRONLY|os.O_APPEND, 0o644)
+	} else {
+		f, err = os.Create(dst)
+	}
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	total := resp.ContentLength
+	total := contentTotal(resp, startAt)
 	buf := make([]byte, 256*1024)
-	var downloaded int64
+	downloaded := startAt
 	start := time.Now()
-	lastLog := time.Time{}
+	lastRender := time.Time{}
+
+	renderDownloadProgress(downloaded, total, 0)
 
 	for {
 		n, readErr := resp.Body.Read(buf)
@@ -198,18 +253,20 @@ func downloadFile(ctx context.Context, src, dst string) error {
 			downloaded += int64(n)
 
 			now := time.Now()
-			if lastLog.IsZero() || now.Sub(lastLog) >= 500*time.Millisecond {
-				logDownloadProgress(downloaded, total, now.Sub(start))
-				lastLog = now
+			if lastRender.IsZero() || now.Sub(lastRender) >= 300*time.Millisecond {
+				renderDownloadProgress(downloaded, total, now.Sub(start))
+				lastRender = now
 			}
 		}
 
 		if readErr == io.EOF {
-			logDownloadProgress(downloaded, total, time.Since(start))
+			renderDownloadProgress(downloaded, total, time.Since(start))
+			fmt.Fprintln(os.Stderr)
 			log.Printf("download complete")
 			return nil
 		}
 		if readErr != nil {
+			fmt.Fprintln(os.Stderr)
 			return readErr
 		}
 	}
@@ -272,7 +329,7 @@ func extractFromGzip(src, dst string) error {
 	return err
 }
 
-func logDownloadProgress(done, total int64, elapsed time.Duration) {
+func renderDownloadProgress(done, total int64, elapsed time.Duration) {
 	sec := elapsed.Seconds()
 	if sec <= 0 {
 		sec = 0.001
@@ -280,10 +337,11 @@ func logDownloadProgress(done, total int64, elapsed time.Duration) {
 	speed := float64(done) / sec
 	if total > 0 {
 		pct := float64(done) * 100 / float64(total)
-		log.Printf("download progress: %5.1f%% (%s/%s) %s/s", pct, formatBytes(done), formatBytes(total), formatBytes(int64(speed)))
+		bar := progressBar(done, total, 24)
+		fmt.Fprintf(os.Stderr, "\rdownloading core %s %5.1f%%  %s/%s  %s/s", bar, pct, formatBytes(done), formatBytes(total), formatBytes(int64(speed)))
 		return
 	}
-	log.Printf("download progress: %s %s/s", formatBytes(done), formatBytes(int64(speed)))
+	fmt.Fprintf(os.Stderr, "\rdownloading core %s  %s/s", formatBytes(done), formatBytes(int64(speed)))
 }
 
 func formatBytes(n int64) string {
@@ -297,4 +355,47 @@ func formatBytes(n int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f%ciB", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+func contentTotal(resp *http.Response, startAt int64) int64 {
+	if resp.StatusCode == http.StatusPartialContent {
+		cr := resp.Header.Get("Content-Range")
+		if cr != "" {
+			// bytes start-end/total
+			parts := strings.Split(cr, "/")
+			if len(parts) == 2 {
+				if total, err := strconv.ParseInt(parts[1], 10, 64); err == nil {
+					return total
+				}
+			}
+		}
+		if resp.ContentLength > 0 {
+			return startAt + resp.ContentLength
+		}
+	}
+	return resp.ContentLength
+}
+
+func progressBar(done, total int64, width int) string {
+	if width <= 0 {
+		width = 20
+	}
+	if total <= 0 {
+		return "[" + strings.Repeat("=", width/3) + ">" + strings.Repeat(" ", width-width/3-1) + "]"
+	}
+	ratio := float64(done) / float64(total)
+	if ratio < 0 {
+		ratio = 0
+	}
+	if ratio > 1 {
+		ratio = 1
+	}
+	filled := int(math.Round(ratio * float64(width)))
+	if filled > width {
+		filled = width
+	}
+	if filled == width {
+		return "[" + strings.Repeat("=", width) + "]"
+	}
+	return "[" + strings.Repeat("=", filled) + ">" + strings.Repeat(" ", width-filled-1) + "]"
 }
