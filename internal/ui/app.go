@@ -18,7 +18,23 @@ import (
 	"clash-tui/internal/subscription"
 )
 
-var tabs = []string{"Overview", "Proxies", "Connections", "Rules", "Logs", "Profiles", "Settings"}
+var tabs = []string{"Dashboard", "Network", "Profiles", "System"}
+var tabIcons = []string{"󰕮", "󰤨", "󰈯", "󰒓"}
+var networkTabs = []string{"Proxies", "Rules", "Connections"}
+var systemTabs = []string{"Logs", "Settings"}
+
+const defaultThemeIndex = 1 // Gruvbox
+
+type notifyItem struct {
+	At    time.Time
+	Level string
+	Text  string
+}
+
+type paletteAction struct {
+	ID    string
+	Title string
+}
 
 type errMsg struct{ err error }
 type versionMsg struct{ v mihomo.VersionResponse }
@@ -82,7 +98,10 @@ type model struct {
 	width  int
 	height int
 
-	tab int
+	tab        int
+	networkTab int
+	systemTab  int
+	themeIndex int
 
 	cfg    config.Settings
 	client *mihomo.Client
@@ -95,6 +114,11 @@ type model struct {
 	nodes   []string
 	rules   []mihomo.Rule
 	conns   []mihomo.Connection
+	txRate  float64
+	rxRate  float64
+	lastUp  int64
+	lastDn  int64
+	lastIO  time.Time
 
 	providers      []string
 	providersState map[string]mihomo.Provider
@@ -102,14 +126,19 @@ type model struct {
 	delayMap map[string]int
 	logs     []string
 
-	status      string
-	lastErr     error
-	loading     bool
-	pollCounter int
+	status        string
+	lastErr       error
+	loading       bool
+	pollCounter   int
+	notifications []notifyItem
+	statusMini    []int
 
 	proxyPane      int
 	groupCursor    int
 	nodeCursor     int
+	nodeOffset     int
+	nodePageSize   int
+	currentGroup   string
 	connCursor     int
 	rulesOffset    int
 	providerCursor int
@@ -122,11 +151,17 @@ type model struct {
 	importName     textinput.Model
 	importURL      textinput.Model
 	importFocus    int
+	paletteOpen    bool
+	paletteInput   textinput.Model
+	paletteCursor  int
 
 	bodyY int
 	bodyW int
 	bodyH int
 
+	mainTabTargets      []clickTarget
+	networkTabTargets   []clickTarget
+	systemTabTargets    []clickTarget
 	overviewModeTargets []clickTarget
 	proxyModeTargets    []clickTarget
 	proxyActionTarget   []clickTarget
@@ -137,7 +172,7 @@ type model struct {
 func NewModel(cfg config.Settings, rt *runtime.Manager) *model {
 	client, err := mihomo.NewClient(cfg.Endpoint, cfg.Secret)
 	m := &model{
-		styles:         defaultStyles(),
+		styles:         defaultStyles(defaultThemeIndex),
 		cfg:            cfg,
 		client:         client,
 		rt:             rt,
@@ -148,12 +183,20 @@ func NewModel(cfg config.Settings, rt *runtime.Manager) *model {
 		loading:        true,
 		status:         "connecting mihomo controller...",
 		providersState: map[string]mihomo.Provider{},
+		networkTab:     0,
+		systemTab:      0,
+		themeIndex:     defaultThemeIndex,
+		notifications:  make([]notifyItem, 0, 30),
+		statusMini:     make([]int, 0, 60),
+		nodePageSize:   12,
 	}
 	m.initSettingsInputs()
 	m.initImportInputs()
+	m.initPaletteInput()
+	m.pushNote("info", m.status)
 	if err != nil {
 		m.lastErr = err
-		m.status = "init client failed"
+		m.setStatus("init client failed")
 	}
 	return m
 }
@@ -180,22 +223,61 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resizeInputs()
 		return m, nil
 	case tea.MouseMsg:
-		if msg.Action == tea.MouseActionPress {
-			if msg.Y == 1 {
-				if idx := m.tabHit(msg.X); idx >= 0 {
-					m.tab = idx
+		if m.tab == 1 && m.networkTab == 0 {
+			if msg.Button == tea.MouseButtonWheelUp {
+				if len(m.nodes) > 0 {
+					m.proxyPane = 1
+					m.nodeCursor = clamp(m.nodeCursor-1, 0, max(0, len(m.nodes)-1))
+					m.ensureNodeVisible()
 				}
-			} else if m.tab == 0 {
+				return m, nil
+			}
+			if msg.Button == tea.MouseButtonWheelDown {
+				if len(m.nodes) > 0 {
+					m.proxyPane = 1
+					m.nodeCursor = clamp(m.nodeCursor+1, 0, max(0, len(m.nodes)-1))
+					m.ensureNodeVisible()
+				}
+				return m, nil
+			}
+		}
+		if msg.Action == tea.MouseActionPress || msg.Action == tea.MouseActionRelease {
+			for _, t := range m.mainTabTargets {
+				if t.hit(msg.X, msg.Y) {
+					m.tab = t.idx
+					return m, nil
+				}
+			}
+			if m.tab == 1 {
+				for _, t := range m.networkTabTargets {
+					if t.hit(msg.X, msg.Y) {
+						m.networkTab = t.idx
+						return m, nil
+					}
+				}
+			}
+			if m.tab == 3 {
+				for _, t := range m.systemTabTargets {
+					if t.hit(msg.X, msg.Y) {
+						m.systemTab = t.idx
+						return m, nil
+					}
+				}
+			}
+			if m.tab == 0 {
 				if cmd := m.handleOverviewMouse(msg.X, msg.Y); cmd != nil {
 					return m, cmd
 				}
-			} else if m.tab == 1 {
+			} else if m.tab == 1 && m.networkTab == 0 {
 				if cmd := m.handleProxyMouse(msg.X, msg.Y); cmd != nil {
 					return m, cmd
 				}
 			}
 		}
 	case tea.KeyMsg:
+		if m.paletteOpen {
+			return m, m.handlePaletteKeys(msg)
+		}
 		if cmd := m.handleGlobalKeys(msg); cmd != nil {
 			return m, cmd
 		}
@@ -203,22 +285,26 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case 0:
 			return m, m.handleOverviewKeys(msg)
 		case 1:
-			return m, m.handleProxyKeys(msg)
+			switch m.networkTab {
+			case 0:
+				return m, m.handleProxyKeys(msg)
+			case 1:
+				return m, m.handleRuleKeys(msg)
+			case 2:
+				return m, m.handleConnectionKeys(msg)
+			}
 		case 2:
-			return m, m.handleConnectionKeys(msg)
-		case 3:
-			return m, m.handleRuleKeys(msg)
-		case 4:
-			return m, m.handleLogKeys(msg)
-		case 5:
 			return m, m.handleProfilesKeys(msg)
-		case 6:
+		case 3:
+			if m.systemTab == 0 {
+				return m, m.handleLogKeys(msg)
+			}
 			return m, m.handleSettingsKeys(msg)
 		}
 	case versionMsg:
 		m.version = msg.v.Version
 		m.loading = false
-		m.status = "connected"
+		m.setStatus("connected")
 		m.lastErr = nil
 	case cfgMsg:
 		m.baseCfg = msg.c
@@ -233,6 +319,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.lastErr = nil
 	case connectionsMsg:
 		m.conns = msg.c.Connections
+		m.updateThroughput(msg.c.Connections)
 		m.connCursor = clamp(m.connCursor, 0, max(0, len(m.conns)-1))
 		m.lastErr = nil
 	case providersMsg:
@@ -251,9 +338,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case importSubMsg:
 		if msg.err != nil {
 			m.lastErr = msg.err
-			m.status = "import subscription failed"
+			m.setStatus("import subscription failed")
 		} else {
-			m.status = "subscription imported"
+			m.setStatus("subscription imported")
 			m.importing = false
 			m.lastErr = nil
 		}
@@ -272,27 +359,27 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case updateSubMsg:
 		if msg.err != nil {
 			m.lastErr = msg.err
-			m.status = "update subscription failed"
+			m.setStatus("update subscription failed")
 		} else {
-			m.status = "subscription updated"
+			m.setStatus("subscription updated")
 			m.lastErr = nil
 		}
 		return m, loadSubsCmd(m.rt)
 	case modeSetMsg:
 		if msg.err != nil {
 			m.lastErr = msg.err
-			m.status = "set mode failed"
+			m.setStatus("set mode failed")
 		} else {
 			m.baseCfg.Mode = msg.mode
-			m.status = "mode updated"
+			m.setStatus("mode updated")
 			m.lastErr = nil
 		}
 	case proxySetMsg:
 		if msg.err != nil {
 			m.lastErr = msg.err
-			m.status = "switch node failed"
+			m.setStatus("switch node failed")
 		} else {
-			m.status = fmt.Sprintf("group %s -> %s", msg.group, msg.node)
+			m.setStatus(fmt.Sprintf("group %s -> %s", msg.group, msg.node))
 			if p, ok := m.proxies[msg.group]; ok {
 				p.Now = msg.node
 				m.proxies[msg.group] = p
@@ -303,21 +390,21 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case delayMsg:
 		if msg.err != nil {
 			m.lastErr = msg.err
-			m.status = "delay test failed"
+			m.setStatus("delay test failed")
 		} else {
 			m.delayMap[msg.name] = msg.delay
-			m.status = fmt.Sprintf("delay %s: %dms", msg.name, msg.delay)
+			m.setStatus(fmt.Sprintf("delay %s: %dms", msg.name, msg.delay))
 			m.lastErr = nil
 		}
 	case connClosedMsg:
 		if msg.err != nil {
 			m.lastErr = msg.err
-			m.status = "close connection failed"
+			m.setStatus("close connection failed")
 		} else {
 			if msg.id == "" {
-				m.status = "closed all connections"
+				m.setStatus("closed all connections")
 			} else {
-				m.status = "connection closed"
+				m.setStatus("connection closed")
 			}
 			m.lastErr = nil
 		}
@@ -325,9 +412,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case providersUpdatedMsg:
 		if msg.err != nil {
 			m.lastErr = msg.err
-			m.status = "provider update failed"
+			m.setStatus("provider update failed")
 		} else {
-			m.status = "provider updated"
+			m.setStatus("provider updated")
 			m.lastErr = nil
 		}
 		return m, fetchProvidersCmd(m.client)
@@ -341,7 +428,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, listenLogCmd(m.client, m.cfg.LogLevel)
 	case logErrMsg:
-		m.status = "log stream reconnecting..."
+		m.setStatus("log stream reconnecting...")
 		return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg {
 			return retryLogMsg{}
 		})
@@ -368,7 +455,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	var cmd tea.Cmd
-	if m.tab == 6 {
+	if m.tab == 3 && m.systemTab == 1 {
 		for i := range m.settingsInputs {
 			if i == m.settingsFocus {
 				m.settingsInputs[i].Focus()
@@ -378,7 +465,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.settingsInputs[i], cmd = m.settingsInputs[i].Update(msg)
 		}
 	}
-	if m.tab == 5 && m.importing {
+	if m.tab == 2 && m.importing {
 		for i := 0; i < 2; i++ {
 			if i == m.importFocus {
 				if i == 0 {
@@ -407,9 +494,9 @@ func (m *model) View() string {
 	}
 
 	head := m.renderHeader(m.width)
-	tabline := m.renderTabs(m.width)
-	foot := m.renderFooter(m.width)
 	headerH := lipgloss.Height(head)
+	tabline := m.renderTabs(m.width, headerH)
+	foot := m.renderFooter(m.width)
 	tabH := lipgloss.Height(tabline)
 	footH := lipgloss.Height(foot)
 	bodyHeight := m.height - headerH - tabH - footH
@@ -421,7 +508,12 @@ func (m *model) View() string {
 
 	ui := lipgloss.JoinVertical(lipgloss.Left, head, tabline, body, foot)
 	ui = m.styles.app.Render(ui)
-	return lipgloss.Place(m.width, m.height, lipgloss.Left, lipgloss.Top, ui)
+	base := lipgloss.Place(m.width, m.height, lipgloss.Left, lipgloss.Top, ui)
+	if m.paletteOpen {
+		overlay := m.renderPalette(max(54, m.width/2), max(10, m.height/2))
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, overlay)
+	}
+	return base
 }
 
 func (m *model) handleGlobalKeys(msg tea.KeyMsg) tea.Cmd {
@@ -431,32 +523,59 @@ func (m *model) handleGlobalKeys(msg tea.KeyMsg) tea.Cmd {
 			m.client.Close()
 		}
 		return tea.Quit
+	case ":", "ctrl+k":
+		m.paletteOpen = true
+		m.paletteCursor = 0
+		m.paletteInput.SetValue("")
+		m.paletteInput.Focus()
+		return nil
 	case "tab", "right":
 		m.tab = (m.tab + 1) % len(tabs)
 		return nil
 	case "shift+tab", "left":
 		m.tab = (m.tab - 1 + len(tabs)) % len(tabs)
 		return nil
-	case "1", "2", "3", "4", "5", "6":
+	case "1", "2", "3", "4":
 		i, _ := strconv.Atoi(msg.String())
 		m.tab = i - 1
 		return nil
+	case "]":
+		if m.tab == 1 {
+			m.networkTab = (m.networkTab + 1) % len(networkTabs)
+			return nil
+		}
+		if m.tab == 3 {
+			m.systemTab = (m.systemTab + 1) % len(systemTabs)
+			return nil
+		}
+	case "[":
+		if m.tab == 1 {
+			m.networkTab = (m.networkTab - 1 + len(networkTabs)) % len(networkTabs)
+			return nil
+		}
+		if m.tab == 3 {
+			m.systemTab = (m.systemTab - 1 + len(systemTabs)) % len(systemTabs)
+			return nil
+		}
+	case "F2", "f2":
+		m.cycleTheme()
+		return nil
 	case "r":
-		if m.tab == 0 || m.tab == 1 {
+		if m.tab == 0 || (m.tab == 1 && m.networkTab == 0) {
 			return tea.Batch(
 				setModeCmd(m.client, "rule"),
 				fetchConfigCmd(m.client),
 			)
 		}
 	case "g":
-		if m.tab == 0 || m.tab == 1 {
+		if m.tab == 0 || (m.tab == 1 && m.networkTab == 0) {
 			return tea.Batch(
 				setModeCmd(m.client, "global"),
 				fetchConfigCmd(m.client),
 			)
 		}
 	case "d":
-		if m.tab == 0 || m.tab == 1 {
+		if m.tab == 0 || (m.tab == 1 && m.networkTab == 0) {
 			return tea.Batch(
 				setModeCmd(m.client, "direct"),
 				fetchConfigCmd(m.client),
@@ -478,6 +597,7 @@ func (m *model) handleProxyKeys(msg tea.KeyMsg) tea.Cmd {
 			m.syncNodeCursorByGroup()
 		} else {
 			m.nodeCursor = clamp(m.nodeCursor-1, 0, max(0, len(m.nodes)-1))
+			m.ensureNodeVisible()
 		}
 	case "down", "j":
 		if m.proxyPane == 0 {
@@ -485,6 +605,7 @@ func (m *model) handleProxyKeys(msg tea.KeyMsg) tea.Cmd {
 			m.syncNodeCursorByGroup()
 		} else {
 			m.nodeCursor = clamp(m.nodeCursor+1, 0, max(0, len(m.nodes)-1))
+			m.ensureNodeVisible()
 		}
 	case "enter":
 		if m.proxyPane == 1 && len(m.groups) > 0 && len(m.nodes) > 0 {
@@ -498,7 +619,7 @@ func (m *model) handleProxyKeys(msg tea.KeyMsg) tea.Cmd {
 		}
 	case "T":
 		if len(m.nodes) > 0 {
-			m.status = fmt.Sprintf("testing %d nodes...", len(m.nodes))
+			m.setStatus(fmt.Sprintf("testing %d nodes...", len(m.nodes)))
 			return testAllNodesCmd(m.client, m.nodes)
 		}
 	}
@@ -523,7 +644,7 @@ func (m *model) handleProxyMouse(x, y int) tea.Cmd {
 	for _, t := range m.proxyActionTarget {
 		if t.hit(x, y) && t.text == "test_all" {
 			if len(m.nodes) > 0 {
-				m.status = fmt.Sprintf("testing %d nodes...", len(m.nodes))
+				m.setStatus(fmt.Sprintf("testing %d nodes...", len(m.nodes)))
 				return testAllNodesCmd(m.client, m.nodes)
 			}
 			return nil
@@ -539,6 +660,7 @@ func (m *model) handleProxyMouse(x, y int) tea.Cmd {
 	for _, t := range m.proxyNodeTargets {
 		if t.hit(x, y) {
 			m.nodeCursor = clamp(t.idx, 0, max(0, len(m.nodes)-1))
+			m.ensureNodeVisible()
 			if len(m.groups) > 0 && len(m.nodes) > 0 {
 				group := m.groups[m.groupCursor]
 				node := m.nodes[m.nodeCursor]
@@ -655,6 +777,41 @@ func (m *model) handleProfilesKeys(msg tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
+func (m *model) handlePaletteKeys(msg tea.KeyMsg) tea.Cmd {
+	switch msg.String() {
+	case "esc":
+		m.paletteOpen = false
+		m.paletteInput.Blur()
+		return nil
+	case "enter":
+		actions := m.filteredPaletteActions()
+		if len(actions) == 0 {
+			m.paletteOpen = false
+			return nil
+		}
+		m.paletteOpen = false
+		m.paletteInput.Blur()
+		return m.runPaletteAction(actions[m.paletteCursor].ID)
+	case "up", "k":
+		actions := m.filteredPaletteActions()
+		if len(actions) > 0 {
+			m.paletteCursor = clamp(m.paletteCursor-1, 0, len(actions)-1)
+		}
+		return nil
+	case "down", "j":
+		actions := m.filteredPaletteActions()
+		if len(actions) > 0 {
+			m.paletteCursor = clamp(m.paletteCursor+1, 0, len(actions)-1)
+		}
+		return nil
+	}
+	var cmd tea.Cmd
+	m.paletteInput, cmd = m.paletteInput.Update(msg)
+	actions := m.filteredPaletteActions()
+	m.paletteCursor = clamp(m.paletteCursor, 0, max(0, len(actions)-1))
+	return cmd
+}
+
 func (m *model) applySettings() tea.Cmd {
 	pollSec, err := strconv.Atoi(strings.TrimSpace(m.settingsInputs[2].Value()))
 	if err != nil || pollSec < 1 {
@@ -672,7 +829,7 @@ func (m *model) applySettings() tea.Cmd {
 
 	if err := config.Save(m.cfg); err != nil {
 		m.lastErr = err
-		m.status = "save config failed"
+		m.setStatus("save config failed")
 		return nil
 	}
 
@@ -682,11 +839,11 @@ func (m *model) applySettings() tea.Cmd {
 	c, err := mihomo.NewClient(m.cfg.Endpoint, m.cfg.Secret)
 	if err != nil {
 		m.lastErr = err
-		m.status = "new client failed"
+		m.setStatus("new client failed")
 		return nil
 	}
 	m.client = c
-	m.status = "settings saved"
+	m.setStatus("settings saved")
 
 	return tea.Batch(
 		fetchVersionCmd(m.client),
@@ -702,22 +859,116 @@ func (m *model) applySettings() tea.Cmd {
 }
 
 func (m *model) renderHeader(w int) string {
-	line := m.styles.header.Render("Clash TUI · Mihomo")
-	return lipgloss.NewStyle().Width(w).MaxWidth(w).Render(line)
+	title := "Clash-TUI"
+	mode := strings.ToUpper(strings.TrimSpace(m.baseCfg.Mode))
+	if mode == "" {
+		mode = "RULE"
+	}
+	controller := strings.TrimPrefix(strings.TrimPrefix(m.cfg.Endpoint, "http://"), "https://")
+	if controller == "" {
+		controller = "127.0.0.1:9090"
+	}
+	conn := "CONNECTED"
+	if m.lastErr != nil {
+		conn = "DEGRADED"
+	}
+	connIcon := "●"
+	if m.lastErr != nil {
+		connIcon = "○"
+	}
+	up := formatRateFixed(m.txRate)
+	down := formatRateFixed(m.rxRate)
+	right1 := fmt.Sprintf("%s %s | mode %s | v%s", connIcon, conn, mode, m.version)
+	right2 := fmt.Sprintf("↑ %s ↓ %s | core %s | theme %s", up, down, controller, themes[m.themeIndex].Name)
+	line1 := composeHeaderLine(title, right1, w)
+	line2 := composeHeaderLine("", right2, w)
+	top := m.styles.statusBar.Width(w).MaxWidth(w).Render(line1)
+	bottom := m.styles.statusBar.Width(w).MaxWidth(w).Render(line2)
+	return lipgloss.JoinVertical(lipgloss.Left, top, bottom)
 }
 
-func (m *model) renderTabs(w int) string {
+func (m *model) renderTabs(w, y int) string {
+	m.mainTabTargets = nil
 	out := make([]string, 0, len(tabs))
+	cursorX := 0
 	for i, t := range tabs {
-		label := fmt.Sprintf("%d.%s", i+1, t)
-		if i == m.tab {
-			out = append(out, m.styles.tabActive.Render(label))
-		} else {
-			out = append(out, m.styles.tab.Render(label))
+		icon := ""
+		if i < len(tabIcons) {
+			icon = tabIcons[i] + " "
 		}
+		label := fmt.Sprintf("%s%s", icon, t)
+		var token string
+		if i == m.tab {
+			token = m.styles.tabActive.Render(" " + label + " ")
+		} else {
+			token = m.styles.tab.Render(" " + label + " ")
+		}
+		wToken := lipgloss.Width(token)
+		m.mainTabTargets = append(m.mainTabTargets, clickTarget{
+			x1:  cursorX,
+			y1:  y,
+			x2:  cursorX + wToken,
+			y2:  y + 1,
+			idx: i,
+		})
+		cursorX += wToken
+		out = append(out, token)
 	}
-	line := strings.Join(out, " ")
-	return lipgloss.NewStyle().Width(w).MaxWidth(w).Render(line)
+	line := strings.Join(out, "")
+	return m.styles.mainTabBar.Width(w).MaxWidth(w).Render(line)
+}
+
+func (m *model) renderNetwork(w, h int) string {
+	sub := m.renderSubTabs("NETWORK", networkTabs, m.networkTab, m.bodyY, &m.networkTabTargets)
+	sub = m.styles.subTabBar.Width(w).MaxWidth(w).Render(sub)
+	bodyH := max(4, h-lipgloss.Height(sub)-1)
+	var body string
+	switch m.networkTab {
+	case 0:
+		body = m.renderProxies(w, bodyH)
+	case 1:
+		body = m.renderRules(w, bodyH)
+	default:
+		body = m.renderConnections(w, bodyH)
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, sub, body)
+}
+
+func (m *model) renderSystem(w, h int) string {
+	sub := m.renderSubTabs("SYSTEM", systemTabs, m.systemTab, m.bodyY, &m.systemTabTargets)
+	sub = m.styles.subTabBar.Width(w).MaxWidth(w).Render(sub)
+	bodyH := max(4, h-lipgloss.Height(sub)-1)
+	if m.systemTab == 0 {
+		return lipgloss.JoinVertical(lipgloss.Left, sub, m.renderLogs(w, bodyH))
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, sub, m.renderSettings(w, bodyH))
+}
+
+func (m *model) renderSubTabs(section string, items []string, active, y int, targets *[]clickTarget) string {
+	*targets = nil
+	out := make([]string, 0, len(items)+2)
+	sectionToken := m.styles.sectionLabel.Render(section)
+	out = append(out, sectionToken, m.styles.subtle.Render("│"))
+	cursorX := lipgloss.Width(sectionToken) + 1
+	for i, t := range items {
+		var token string
+		if i == active {
+			token = m.styles.subTabActive.Render("• " + t)
+		} else {
+			token = m.styles.subTab.Render("  " + t)
+		}
+		wToken := lipgloss.Width(token)
+		*targets = append(*targets, clickTarget{
+			x1:  cursorX,
+			y1:  y,
+			x2:  cursorX + wToken,
+			y2:  y + 1,
+			idx: i,
+		})
+		cursorX += wToken
+		out = append(out, token)
+	}
+	return strings.Join(out, "")
 }
 
 func (m *model) renderBody(bodyW, bodyH int) string {
@@ -728,17 +979,11 @@ func (m *model) renderBody(bodyW, bodyH int) string {
 	case 0:
 		return m.renderOverview(bodyW, bodyH)
 	case 1:
-		return m.renderProxies(bodyW, bodyH)
+		return m.renderNetwork(bodyW, bodyH)
 	case 2:
-		return m.renderConnections(bodyW, bodyH)
-	case 3:
-		return m.renderRules(bodyW, bodyH)
-	case 4:
-		return m.renderLogs(bodyW, bodyH)
-	case 5:
 		return m.renderProfiles(bodyW, bodyH)
-	case 6:
-		return m.renderSettings(bodyW, bodyH)
+	case 3:
+		return m.renderSystem(bodyW, bodyH)
 	default:
 		return ""
 	}
@@ -752,21 +997,27 @@ func (m *model) renderOverview(w, h int) string {
 	leftContentX, leftContentY := m.panelContentOrigin(leftX, leftY)
 
 	modeBlock := []string{
-		m.styles.panelTitle.Render("Modes"),
+		m.styles.panelTitle.Render("Dashboard"),
 		"",
-		fmt.Sprintf("Current: %s", strings.ToUpper(m.baseCfg.Mode)),
+		fmt.Sprintf("Mode: %s", strings.ToUpper(m.baseCfg.Mode)),
 		m.renderOverviewModeLine(leftContentX, leftContentY+3),
 		m.styles.subtle.Render("Keyboard: r/g/d"),
 		"",
-		m.styles.panelTitle.Render("Controller"),
+		m.styles.panelTitle.Render("Runtime"),
 		fmt.Sprintf("Endpoint: %s", m.cfg.Endpoint),
 		fmt.Sprintf("Version: %s", m.version),
-		fmt.Sprintf("Status: %s", m.status),
+		fmt.Sprintf("Theme: %s", themes[m.themeIndex].Name),
 		"",
-		m.styles.panelTitle.Render("Runtime"),
 		fmt.Sprintf("Groups: %d", len(m.groups)),
 		fmt.Sprintf("Connections: %d", len(m.conns)),
 		fmt.Sprintf("Rules: %d", len(m.rules)),
+		"",
+		m.styles.panelTitle.Render("Mini Trend"),
+		m.styles.subtle.Render(m.sparkline()),
+		"",
+		m.styles.panelTitle.Render("Quick Actions"),
+		m.styles.action.Render(" : Command Palette "),
+		"F2: Cycle Theme",
 	}
 	if m.lastErr != nil {
 		modeBlock = append(modeBlock, "", m.styles.errorText.Render("Error: "+m.lastErr.Error()))
@@ -784,7 +1035,7 @@ func (m *model) renderOverview(w, h int) string {
 	leftW := w / 2
 	rightW := w - leftW - 1
 	left := m.renderPanel(leftW, h, strings.Join(modeBlock, "\n"))
-	right := m.renderPanel(rightW, h, m.renderProviderLines())
+	right := m.renderPanel(rightW, h, m.renderNotificationCenter())
 	return lipgloss.JoinHorizontal(lipgloss.Top, left, " ", right)
 }
 
@@ -825,9 +1076,13 @@ func (m *model) renderProxies(w, h int) string {
 
 	leftLines := []string{m.styles.panelTitle.Render("Proxy Groups")}
 	for i, g := range m.groups {
-		line := g
+		typ := strings.ToUpper(strings.TrimSpace(m.proxies[g].Type))
+		if typ == "" {
+			typ = "-"
+		}
+		line := fmt.Sprintf("%s  ·  %s", g, typ)
 		if i == m.groupCursor {
-			line = m.styles.cursor.Render(line)
+			line = m.styles.cursor.Render("┃ " + line)
 		}
 		leftLines = append(leftLines, line)
 		row := 1 + i
@@ -861,12 +1116,18 @@ func (m *model) renderProxies(w, h int) string {
 		rightLines = append(rightLines, m.styles.subtle.Render("Group: -"))
 	}
 	nodeStartRow := 4
-	for i, n := range m.nodes {
-		parts := []string{n}
-		if d, ok := m.delayMap[n]; ok {
-			parts = append(parts, fmt.Sprintf("%dms", d))
-		}
-		line := strings.Join(parts, "  ")
+	maxNodeRows := max(1, m.panelContentHeight(rightH)-nodeStartRow)
+	if m.proxyPane == 1 {
+		maxNodeRows = max(1, maxNodeRows-2)
+	}
+	m.nodePageSize = maxNodeRows
+	m.ensureNodeVisible()
+	start := m.nodeOffset
+	end := min(len(m.nodes), start+maxNodeRows)
+	for i := start; i < end; i++ {
+		n := m.nodes[i]
+		delayCell := m.renderDelayCell(n)
+		line := fmt.Sprintf("%-34s %s", n, delayCell)
 		if n == now {
 			line = m.styles.selected.Render("★ " + line)
 		}
@@ -874,7 +1135,7 @@ func (m *model) renderProxies(w, h int) string {
 			line = m.styles.cursor.Render(line)
 		}
 		rightLines = append(rightLines, line)
-		row := nodeStartRow + i
+		row := nodeStartRow + (i - start)
 		m.proxyNodeTargets = append(m.proxyNodeTargets, clickTarget{
 			x1:  rightContentX,
 			y1:  rightContentY + row,
@@ -889,8 +1150,8 @@ func (m *model) renderProxies(w, h int) string {
 	if m.proxyPane == 1 {
 		rightLines = append(rightLines, "", m.styles.subtle.Render("Enter: switch node   t: test one   T: test all"))
 	}
-	left := m.renderPanel(leftW, leftH, strings.Join(leftLines, "\n"))
-	right := m.renderPanel(rightW, rightH, strings.Join(rightLines, "\n"))
+	left := m.renderPanelFocused(leftW, leftH, strings.Join(leftLines, "\n"), m.proxyPane == 0)
+	right := m.renderPanelFocused(rightW, rightH, strings.Join(rightLines, "\n"), m.proxyPane == 1)
 	if w < 90 {
 		return lipgloss.JoinVertical(lipgloss.Left, left, " ", right)
 	}
@@ -1018,16 +1279,195 @@ func (m *model) renderSettings(w, h int) string {
 }
 
 func (m *model) renderFooter(w int) string {
-	msg := m.status
+	left := "[Ctrl+K] Command Palette  [1-4] Switch Tab  [q] Quit"
+	switch m.tab {
+	case 1:
+		if m.networkTab == 0 {
+			left = "[↑↓/j k] Move  [Enter] Select  [t/T] Test Delay  [r g d] Mode"
+		} else if m.networkTab == 2 {
+			left = "[↑↓/j k] Move  [x] Close  [X] Close All"
+		}
+	case 2:
+		left = "[i] Import  [u] Update Selected  [U] Update All"
+	case 3:
+		if m.systemTab == 1 {
+			left = "[Tab] Next Field  [Shift+Tab] Prev Field  [s] Save"
+		} else {
+			left = "[c] Clear Logs  [Tab] Switch"
+		}
+	}
+	msg := strings.TrimSpace(m.status)
 	if msg == "" {
-		msg = "Ready"
+		msg = "ready"
 	}
-	help := "q quit | tab switch page | 1-6 jump | mouse click tabs"
-	if len(tabs) > 6 {
-		help = "q quit | tab switch page | 1-7 jump | mouse click tabs"
-	}
-	line := m.styles.footer.Render(msg + "  |  " + help)
+	line := m.styles.footer.Render(left + "  │  📝 " + msg)
 	return lipgloss.NewStyle().Width(w).MaxWidth(w).Render(line)
+}
+
+func (m *model) pillForMode() string {
+	mode := strings.ToLower(m.baseCfg.Mode)
+	if mode == "" {
+		mode = "rule"
+	}
+	return m.styles.pillActive.Render("mode: " + strings.ToUpper(mode))
+}
+
+func (m *model) sparkline() string {
+	if len(m.statusMini) == 0 {
+		return "▁▁▁▁▁▁▁▁"
+	}
+	blocks := []rune("▁▂▃▄▅▆▇█")
+	minV, maxV := m.statusMini[0], m.statusMini[0]
+	for _, v := range m.statusMini {
+		if v < minV {
+			minV = v
+		}
+		if v > maxV {
+			maxV = v
+		}
+	}
+	if maxV == minV {
+		return strings.Repeat("▅", min(24, len(m.statusMini)))
+	}
+	start := max(0, len(m.statusMini)-24)
+	var b strings.Builder
+	for _, v := range m.statusMini[start:] {
+		idx := (v - minV) * (len(blocks) - 1) / (maxV - minV)
+		b.WriteRune(blocks[idx])
+	}
+	return b.String()
+}
+
+func (m *model) renderNotificationCenter() string {
+	lines := []string{m.styles.notifTitle.Render("Notifications")}
+	if len(m.notifications) == 0 {
+		lines = append(lines, "", "No recent events")
+		return strings.Join(lines, "\n")
+	}
+	start := max(0, len(m.notifications)-12)
+	for _, n := range m.notifications[start:] {
+		ts := n.At.Format("15:04:05")
+		line := fmt.Sprintf("[%s] %s", ts, n.Text)
+		if n.Level == "error" {
+			line = m.styles.errorText.Render(line)
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m *model) cycleTheme() {
+	m.themeIndex = (m.themeIndex + 1) % len(themes)
+	m.styles = defaultStyles(m.themeIndex)
+	m.pushNote("info", "theme switched to "+themes[m.themeIndex].Name)
+}
+
+func (m *model) paletteActions() []paletteAction {
+	return []paletteAction{
+		{ID: "goto_dashboard", Title: "Go: Dashboard"},
+		{ID: "goto_network", Title: "Go: Network"},
+		{ID: "goto_profiles", Title: "Go: Profiles"},
+		{ID: "goto_system", Title: "Go: System"},
+		{ID: "network_proxies", Title: "Network: Proxies"},
+		{ID: "network_rules", Title: "Network: Rules"},
+		{ID: "network_connections", Title: "Network: Connections"},
+		{ID: "system_logs", Title: "System: Logs"},
+		{ID: "system_settings", Title: "System: Settings"},
+		{ID: "mode_rule", Title: "Set Mode: Rule"},
+		{ID: "mode_global", Title: "Set Mode: Global"},
+		{ID: "mode_direct", Title: "Set Mode: Direct"},
+		{ID: "test_all", Title: "Proxies: Test All Nodes"},
+		{ID: "update_all_subs", Title: "Profiles: Update All Subscriptions"},
+		{ID: "theme_cycle", Title: "Theme: Cycle"},
+	}
+}
+
+func (m *model) filteredPaletteActions() []paletteAction {
+	all := m.paletteActions()
+	q := strings.ToLower(strings.TrimSpace(m.paletteInput.Value()))
+	if q == "" {
+		return all
+	}
+	out := make([]paletteAction, 0, len(all))
+	for _, a := range all {
+		if strings.Contains(strings.ToLower(a.Title), q) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+func (m *model) runPaletteAction(id string) tea.Cmd {
+	switch id {
+	case "goto_dashboard":
+		m.tab = 0
+	case "goto_network":
+		m.tab = 1
+	case "goto_profiles":
+		m.tab = 2
+	case "goto_system":
+		m.tab = 3
+	case "network_proxies":
+		m.tab = 1
+		m.networkTab = 0
+	case "network_rules":
+		m.tab = 1
+		m.networkTab = 1
+	case "network_connections":
+		m.tab = 1
+		m.networkTab = 2
+	case "system_logs":
+		m.tab = 3
+		m.systemTab = 0
+	case "system_settings":
+		m.tab = 3
+		m.systemTab = 1
+	case "mode_rule":
+		return tea.Batch(setModeCmd(m.client, "rule"), fetchConfigCmd(m.client))
+	case "mode_global":
+		return tea.Batch(setModeCmd(m.client, "global"), fetchConfigCmd(m.client))
+	case "mode_direct":
+		return tea.Batch(setModeCmd(m.client, "direct"), fetchConfigCmd(m.client))
+	case "test_all":
+		if len(m.nodes) > 0 {
+			return testAllNodesCmd(m.client, m.nodes)
+		}
+	case "update_all_subs":
+		if len(m.subscriptions) > 0 {
+			cmds := make([]tea.Cmd, 0, len(m.subscriptions))
+			for _, it := range m.subscriptions {
+				cmds = append(cmds, updateProviderCmd2(m.client, it.ProviderName))
+			}
+			return tea.Batch(cmds...)
+		}
+	case "theme_cycle":
+		m.cycleTheme()
+	}
+	return nil
+}
+
+func (m *model) renderPalette(w, h int) string {
+	actions := m.filteredPaletteActions()
+	lines := []string{
+		m.styles.panelTitle.Render("Command Palette"),
+		m.paletteInput.View(),
+		"",
+	}
+	maxRows := max(1, h-5)
+	for i, a := range actions {
+		if i >= maxRows {
+			break
+		}
+		line := a.Title
+		if i == m.paletteCursor {
+			line = m.styles.cursor.Render(line)
+		}
+		lines = append(lines, line)
+	}
+	if len(actions) == 0 {
+		lines = append(lines, m.styles.subtle.Render("No matched actions"))
+	}
+	return m.styles.overlay.Width(w).Render(strings.Join(lines, "\n"))
 }
 
 func (m *model) rebuildGroupsAndNodes() {
@@ -1051,18 +1491,62 @@ func (m *model) syncNodeCursorByGroup() {
 	if len(m.groups) == 0 {
 		m.nodes = nil
 		m.nodeCursor = 0
+		m.nodeOffset = 0
+		m.currentGroup = ""
 		return
 	}
 	group := m.groups[m.groupCursor]
-	m.nodes = append([]string{}, m.proxies[group].All...)
-	m.nodeCursor = clamp(m.nodeCursor, 0, max(0, len(m.nodes)-1))
-	now := m.proxies[group].Now
-	for i, n := range m.nodes {
-		if n == now {
-			m.nodeCursor = i
-			break
-		}
+	prevGroup := m.currentGroup
+	prevNode := ""
+	if prevGroup == group && m.nodeCursor >= 0 && m.nodeCursor < len(m.nodes) {
+		prevNode = m.nodes[m.nodeCursor]
 	}
+	m.nodes = append([]string{}, m.proxies[group].All...)
+	if prevGroup != group {
+		now := m.proxies[group].Now
+		m.nodeCursor = 0
+		for i, n := range m.nodes {
+			if n == now {
+				m.nodeCursor = i
+				break
+			}
+		}
+	} else if prevNode != "" {
+		found := -1
+		for i, n := range m.nodes {
+			if n == prevNode {
+				found = i
+				break
+			}
+		}
+		if found >= 0 {
+			m.nodeCursor = found
+		} else {
+			m.nodeCursor = clamp(m.nodeCursor, 0, max(0, len(m.nodes)-1))
+		}
+	} else {
+		m.nodeCursor = clamp(m.nodeCursor, 0, max(0, len(m.nodes)-1))
+	}
+	m.currentGroup = group
+	m.ensureNodeVisible()
+}
+
+func (m *model) ensureNodeVisible() {
+	page := max(1, m.nodePageSize)
+	m.nodeCursor = clamp(m.nodeCursor, 0, max(0, len(m.nodes)-1))
+	maxOffset := max(0, len(m.nodes)-page)
+	m.nodeOffset = clamp(m.nodeOffset, 0, maxOffset)
+	if len(m.nodes) == 0 {
+		m.nodeOffset = 0
+		return
+	}
+	if m.nodeCursor < m.nodeOffset {
+		m.nodeOffset = m.nodeCursor
+	}
+	if m.nodeCursor >= m.nodeOffset+page {
+		m.nodeOffset = m.nodeCursor - page + 1
+	}
+	m.nodeOffset = clamp(m.nodeOffset, 0, maxOffset)
 }
 
 func (m *model) initSettingsInputs() {
@@ -1093,6 +1577,41 @@ func (m *model) initImportInputs() {
 	m.importURL.Width = 60
 }
 
+func (m *model) initPaletteInput() {
+	m.paletteInput = textinput.New()
+	m.paletteInput.Prompt = "> "
+	m.paletteInput.Placeholder = "search action..."
+	m.paletteInput.Width = 48
+}
+
+func (m *model) setStatus(s string) {
+	m.status = s
+	level := "info"
+	if strings.Contains(strings.ToLower(s), "failed") || strings.Contains(strings.ToLower(s), "error") {
+		level = "error"
+	}
+	m.pushNote(level, s)
+}
+
+func (m *model) pushNote(level, text string) {
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+	m.notifications = append(m.notifications, notifyItem{
+		At:    time.Now(),
+		Level: level,
+		Text:  text,
+	})
+	if len(m.notifications) > 40 {
+		m.notifications = m.notifications[len(m.notifications)-40:]
+	}
+	val := len(m.conns)
+	m.statusMini = append(m.statusMini, val)
+	if len(m.statusMini) > 48 {
+		m.statusMini = m.statusMini[len(m.statusMini)-48:]
+	}
+}
+
 func (m *model) resizeInputs() {
 	w := max(24, m.width-10)
 	for i := range m.settingsInputs {
@@ -1103,7 +1622,8 @@ func (m *model) resizeInputs() {
 }
 
 func (m *model) proxyPanels(w, h int) (leftX, leftY, leftW, leftH, rightX, rightY, rightW, rightH int) {
-	leftX, leftY = 0, m.bodyY
+	// Network page has a one-line sub-tab row before proxy panels.
+	leftX, leftY = 0, m.bodyY+1
 	if w < 90 {
 		topH := h / 2
 		bottomH := h - topH - 1
@@ -1113,7 +1633,7 @@ func (m *model) proxyPanels(w, h int) (leftX, leftY, leftW, leftH, rightX, right
 		leftW = w
 		leftH = topH
 		rightX = 0
-		rightY = m.bodyY + topH + 1
+		rightY = leftY + topH + 1
 		rightW = w
 		rightH = bottomH
 		return
@@ -1122,7 +1642,7 @@ func (m *model) proxyPanels(w, h int) (leftX, leftY, leftW, leftH, rightX, right
 	leftW = max(22, w/3)
 	leftH = h
 	rightX = leftW + 1
-	rightY = m.bodyY
+	rightY = leftY
 	rightW = w - leftW - 1
 	rightH = h
 	return
@@ -1242,17 +1762,146 @@ func (m *model) renderPanel(outerW, outerH int, content string) string {
 		Render(content)
 }
 
-func (m *model) tabHit(x int) int {
-	pos := 0
-	for i, t := range tabs {
-		label := fmt.Sprintf("%d.%s", i+1, t)
-		w := lipgloss.Width(label) + 2
-		if x >= pos && x < pos+w {
-			return i
-		}
-		pos += w + 1
+func (m *model) renderPanelFocused(outerW, outerH int, content string, focused bool) string {
+	cw := max(1, outerW-m.styles.panel.GetHorizontalFrameSize())
+	ch := max(1, outerH-m.styles.panel.GetVerticalFrameSize())
+	st := m.styles.panel
+	if focused {
+		st = st.BorderForeground(lipgloss.Color(themes[m.themeIndex].Primary))
+	} else {
+		st = st.BorderForeground(lipgloss.Color(themes[m.themeIndex].Panel))
 	}
-	return -1
+	return st.
+		Width(cw).
+		Height(ch).
+		MaxWidth(cw).
+		MaxHeight(ch).
+		Render(content)
+}
+
+func (m *model) renderDelayCell(node string) string {
+	delay, ok := m.delayMap[node]
+	if !ok || delay <= 0 {
+		return m.styles.subtle.Render("⚪ timeout")
+	}
+	var color, dot string
+	var bars int
+	switch {
+	case delay < 100:
+		color, dot, bars = themes[m.themeIndex].Success, "🟢", 2
+	case delay <= 300:
+		color, dot, bars = themes[m.themeIndex].Warning, "🟡", 4
+	default:
+		color, dot, bars = themes[m.themeIndex].Error, "🔴", 6
+	}
+	bar := strings.Repeat("▮", bars)
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(fmt.Sprintf("%s %s %4dms", dot, bar, delay))
+}
+
+func (m *model) updateThroughput(conns []mihomo.Connection) {
+	var up, dn int64
+	for _, c := range conns {
+		up += c.Upload
+		dn += c.Download
+	}
+	now := time.Now()
+	if m.lastIO.IsZero() {
+		m.lastUp = up
+		m.lastDn = dn
+		m.lastIO = now
+		return
+	}
+	dt := now.Sub(m.lastIO).Seconds()
+	if dt <= 0 {
+		return
+	}
+	du := up - m.lastUp
+	dd := dn - m.lastDn
+	if du < 0 {
+		du = 0
+	}
+	if dd < 0 {
+		dd = 0
+	}
+	m.txRate = float64(du) / dt
+	m.rxRate = float64(dd) / dt
+	m.lastUp = up
+	m.lastDn = dn
+	m.lastIO = now
+}
+
+func formatRate(v float64) string {
+	units := []string{"B/s", "KB/s", "MB/s", "GB/s"}
+	u := 0
+	for v >= 1024 && u < len(units)-1 {
+		v /= 1024
+		u++
+	}
+	if u == 0 {
+		return fmt.Sprintf("%.0f %s", v, units[u])
+	}
+	return fmt.Sprintf("%.1f %s", v, units[u])
+}
+
+func formatRateFixed(v float64) string {
+	units := []string{"B/s", "KB/s", "MB/s", "GB/s"}
+	u := 0
+	for v >= 1024 && u < len(units)-1 {
+		v /= 1024
+		u++
+	}
+	if v > 9999 {
+		v = 9999
+	}
+	// Fixed width: value 6 chars + unit 4 chars.
+	return fmt.Sprintf("%6.1f %-4s", v, units[u])
+}
+
+func truncateByWidth(s string, w int) string {
+	if w <= 0 {
+		return ""
+	}
+	if lipgloss.Width(s) <= w {
+		return s
+	}
+	if w == 1 {
+		return "…"
+	}
+	ellipsis := "…"
+	maxW := w - lipgloss.Width(ellipsis)
+	var b strings.Builder
+	cur := 0
+	for _, r := range s {
+		rw := lipgloss.Width(string(r))
+		if cur+rw > maxW {
+			break
+		}
+		b.WriteRune(r)
+		cur += rw
+	}
+	return b.String() + ellipsis
+}
+
+func composeHeaderLine(left, right string, w int) string {
+	left = strings.TrimSpace(left)
+	right = strings.TrimSpace(right)
+	if w <= 0 {
+		return ""
+	}
+	gap := 2
+	leftW := lipgloss.Width(left)
+	if left == "" {
+		gap = 0
+	}
+	rightW := max(0, w-leftW-gap)
+	if leftW >= w {
+		return truncateByWidth(left, w)
+	}
+	right = truncateByWidth(right, rightW)
+	if left == "" {
+		return lipgloss.NewStyle().Width(w).Align(lipgloss.Right).Render(right)
+	}
+	return left + strings.Repeat(" ", gap) + lipgloss.NewStyle().Width(rightW).Align(lipgloss.Right).Render(right)
 }
 
 func pollCmd(d time.Duration) tea.Cmd {
