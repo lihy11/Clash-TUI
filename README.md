@@ -1,71 +1,48 @@
 # clash-tui
 
-`clash-tui` 是一个基于 `Go + Bubble Tea` 的 Mihomo/Clash 终端 UI，目标是尽量对齐 ClashX / Clash Verge 的高频操作体验：代理模式切换、代理组节点切换、连接管理、规则查看、日志查看、订阅导入更新、控制器配置。
+`clash-tui` 是一个终端版 Clash/Mihomo 管理工具，支持鼠标和键盘操作，适合在服务器或本地终端快速切换节点与代理模式。
 
-## 功能范围
+[![Release](https://img.shields.io/github/v/release/lihy11/Clash-TUI?label=download&logo=github)](https://github.com/lihy11/Clash-TUI/releases)
+[![License](https://img.shields.io/github/license/lihy11/Clash-TUI)](./LICENSE)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/lihy11/Clash-TUI)](./go.mod)
 
-- Overview：运行状态、Controller 信息、模式切换（Rule/Global/Direct）、Provider 概览
-- Proxies：代理组和节点切换、节点延迟测试、模式点击切换（Rule/Global/Direct）、一键批量测速
-- Connections：查看当前连接、关闭单条/全部连接
-- Rules：规则列表滚动查看
-- Logs：`/logs` 实时日志流
-- Profiles：导入订阅、更新当前订阅、更新全部订阅
-- Settings：控制器地址/密钥/轮询频率/日志级别配置与持久化
+## 快速下载
 
-## 运行要求
+- Release 页面（推荐）：  
+  https://github.com/lihy11/Clash-TUI/releases
+- 一键安装脚本（Linux/macOS）：
 
-- Go `1.22+`
-- 网络可访问 GitHub Releases（首次自动下载 Mihomo 内核时需要）
+```bash
+curl -fsSL https://raw.githubusercontent.com/lihy11/Clash-TUI/main/scripts/install.sh | sh
+```
 
-## 安装与启动
+## 安装与运行
+
+1. 打开 Release 页面下载对应系统包（`macOS / Windows / Linux`）。
+2. 安装后运行 `clash-tui`。
+3. 首次启动会自动准备 Mihomo 内核，并进入 TUI。
+
+如果你是开发者，也可以源码启动：
 
 ```bash
 go mod tidy
 go run ./cmd/clash-tui
 ```
 
-发布后的一键安装（替换仓库地址）：
+## 怎么使用
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/lihy11/Clash-TUI/main/scripts/install.sh | sh
-```
+- `Overview`：查看状态，切换 `Rule/Global/Direct`。
+- `Proxies`：选择代理组与节点，支持单节点测速和一键测速。
+- `Profiles`：导入订阅、更新当前订阅、更新全部订阅。
+- `Connections`：查看并关闭活跃连接。
+- `Settings`：修改控制器地址、密钥、轮询参数。
 
-可选环境变量：
+常用快捷键：
+- `q` 退出
+- `tab` / `shift+tab` 切页
+- `1-7` 快速跳页
 
-- `MIHOMO_CONTROLLER`：例如 `http://127.0.0.1:9090`
-- `MIHOMO_SECRET`：controller secret
+## 许可证
 
-## 快捷键
-
-- 全局：`q` 退出，`tab`/`shift+tab` 切页，`1-7` 直达页面，鼠标点击顶部标签切页
-- Overview：`r`/`g`/`d` 切换 Rule/Global/Direct
-- Overview：鼠标可点 `Switch: [✓/○ Rule|Global|Direct]` 按钮切换模式
-- Overview：`j/k` 选择 provider，`u` 更新 provider
-- Proxies：`h/l` 切换左右面板，`j/k` 或 `↑/↓` 移动，`enter` 切换节点，`t` 测延迟
-- Proxies：鼠标可点代理组、节点、Mode 按钮（点击即切换）
-- Proxies：`T` 批量测速当前组，或点击 `Action: [⚡ Test All]`
-- Connections：`x` 关闭当前连接，`X` 关闭全部连接
-- Rules：`j/k` 或 `↑/↓` 滚动
-- Logs：`c` 清空日志
-- Profiles：`i` 导入订阅，`u` 更新当前订阅，`U` 更新全部订阅
-- Settings：`tab`/`shift+tab` 切换输入项，`s` 保存并重连
-
-## 文档
-
-- 工程设计与接口定义：`docs/IMPLEMENTATION.md`
-- 文件索引：`docs/FILE_INDEX.md`
-- 打包配置：`.goreleaser.yaml`
-
-## 相关项目
-
-- Mihomo（内核）：https://github.com/MetaCubeX/mihomo
-- Clash Verge Rev（桌面端参考）：https://github.com/clash-verge-rev/clash-verge-rev
-- ClashX（交互体验参考）：https://github.com/yichengchen/clashX
-- Bubble Tea（TUI 框架）：https://github.com/charmbracelet/bubbletea
-- Bubbles（TUI 组件）：https://github.com/charmbracelet/bubbles
-- Lip Gloss（终端样式）：https://github.com/charmbracelet/lipgloss
-
-## 开源许可证
-
-- 本项目许可证：`MIT`，见 [LICENSE](./LICENSE)
-- 第三方依赖与上游许可证索引：见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)
+- 项目许可证：`MIT`（见 [LICENSE](./LICENSE)）
+- 第三方许可证说明：见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)
