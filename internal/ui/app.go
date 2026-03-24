@@ -1202,11 +1202,13 @@ func (m *model) renderProxies(w, h int) string {
 		nameW := max(10, innerW-delayW-1)
 		delayCell := m.renderDelayCell(n, delayW)
 		line := fitTextWidth(n, nameW) + " " + delayCell
+		linePlain := fitTextWidth(n, nameW) + " " + m.renderDelayCellPlain(n, delayW)
 		if n == now {
 			line = m.styles.selected.Render("★ " + line)
+			linePlain = "★ " + linePlain
 		}
 		if i == m.nodeCursor {
-			line = m.styles.cursor.Render(line)
+			line = m.styles.cursor.Render(linePlain)
 		}
 		rightLines = append(rightLines, line)
 		row := nodeStartRow + (i - start)
@@ -1902,6 +1904,28 @@ func (m *model) renderDelayCell(node string, cellW int) string {
 	bar := strings.Repeat("▮", bars)
 	cell := fmt.Sprintf("%s %-6s %4dms", dot, bar, delay)
 	return lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(fitTextWidth(cell, cellW))
+}
+
+func (m *model) renderDelayCellPlain(node string, cellW int) string {
+	delay, ok := m.delayMap[node]
+	if !ok || delay == 0 {
+		return fitTextWidth("○", cellW)
+	}
+	if delay < 0 {
+		return fitTextWidth("○ Timeout", cellW)
+	}
+	var dot string
+	var bars int
+	switch {
+	case delay < 100:
+		dot, bars = "●", 2
+	case delay <= 300:
+		dot, bars = "●", 4
+	default:
+		dot, bars = "●", 6
+	}
+	bar := strings.Repeat("▮", bars)
+	return fitTextWidth(fmt.Sprintf("%s %-6s %4dms", dot, bar, delay), cellW)
 }
 
 func (m *model) updateThroughput(conns []mihomo.Connection) {

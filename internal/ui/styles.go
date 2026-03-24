@@ -163,8 +163,9 @@ func defaultStyles(themeIdx int) styles {
 			Bold(true).
 			Foreground(lipgloss.Color(t.Primary)),
 		cursor: lipgloss.NewStyle().
-			Foreground(lipgloss.Color(t.CursorText)).
-			Background(lipgloss.Color(t.Accent)),
+			Bold(true).
+			Foreground(lipgloss.Color(t.Surface)).
+			Background(lipgloss.Color(t.Secondary)),
 		selected: lipgloss.NewStyle().
 			Foreground(lipgloss.Color(t.Success)).
 			Bold(true),
