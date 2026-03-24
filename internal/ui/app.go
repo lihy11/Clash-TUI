@@ -78,6 +78,10 @@ type updateSubMsg struct {
 	name string
 	err  error
 }
+type deleteSubMsg struct {
+	name string
+	err  error
+}
 
 type clickTarget struct {
 	x1   int
@@ -377,6 +381,26 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lastErr = nil
 		}
 		return m, loadSubsCmd(m.rt)
+	case deleteSubMsg:
+		if msg.err != nil {
+			m.lastErr = msg.err
+			m.setStatus("delete subscription failed")
+			return m, nil
+		}
+		m.setStatus("subscription deleted")
+		m.lastErr = nil
+		cmds := []tea.Cmd{loadSubsCmd(m.rt)}
+		if m.rt != nil {
+			cmds = append(cmds,
+				reloadCoreCmd(m.rt, m.cfg),
+				fetchVersionCmd(m.client),
+				fetchConfigCmd(m.client),
+				fetchProxiesCmd(m.client),
+				fetchProvidersCmd(m.client),
+				listenLogCmd(m.client, m.cfg.LogLevel),
+			)
+		}
+		return m, tea.Batch(cmds...)
 	case modeSetMsg:
 		if msg.err != nil {
 			m.lastErr = msg.err
@@ -806,6 +830,11 @@ func (m *model) handleProfilesKeys(msg tea.KeyMsg) tea.Cmd {
 		if len(m.subscriptions) > 0 {
 			it := m.subscriptions[m.profileCursor]
 			return updateProviderCmd2(m.client, it.ProviderName)
+		}
+	case "x":
+		if len(m.subscriptions) > 0 {
+			it := m.subscriptions[m.profileCursor]
+			return deleteSubCmd(m.rt, it.ProviderName)
 		}
 	case "U":
 		if len(m.subscriptions) > 0 {
@@ -1265,7 +1294,7 @@ func (m *model) renderProfiles(w, h int) string {
 
 	lines := []string{
 		m.styles.panelTitle.Render("Profiles / Subscriptions"),
-		m.styles.subtle.Render("i: import   u: update selected   U: update all"),
+		m.styles.subtle.Render("i: import   x: delete selected   u: update selected   U: update all"),
 		"",
 	}
 	if len(m.subscriptions) == 0 {
@@ -1798,10 +1827,10 @@ func (m *model) renderProxyActionLine(contentX, y int) string {
 	prefix := "Action: "
 	// 使用 styles.action 渲染按钮，让它看起来像一个真实的按钮块
 	button := m.styles.action.Render(" ⚡ Test All (T) ")
-	
+
 	startX := contentX + lipgloss.Width(prefix)
 	endX := startX + lipgloss.Width(button)
-	
+
 	m.proxyActionTarget = append(m.proxyActionTarget, clickTarget{
 		x1:   startX,
 		y1:   y,
@@ -1809,7 +1838,7 @@ func (m *model) renderProxyActionLine(contentX, y int) string {
 		y2:   y + 1,
 		text: "test_all",
 	})
-	
+
 	return prefix + button
 }
 
@@ -2189,6 +2218,16 @@ func importSubCmd(rt *runtime.Manager, name, rawURL string) tea.Cmd {
 		}
 		item, err := rt.Subscriptions().Import(name, rawURL)
 		return importSubMsg{item: item, err: err}
+	}
+}
+
+func deleteSubCmd(rt *runtime.Manager, provider string) tea.Cmd {
+	return func() tea.Msg {
+		if rt == nil {
+			return deleteSubMsg{err: fmt.Errorf("runtime unavailable")}
+		}
+		err := rt.Subscriptions().DeleteByProvider(provider)
+		return deleteSubMsg{name: provider, err: err}
 	}
 }
 

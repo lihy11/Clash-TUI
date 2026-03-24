@@ -4,7 +4,7 @@ import (
 	"archive/zip"
 	"compress/gzip"
 	"context"
-	"encoding/json"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"log"
@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -20,7 +21,7 @@ import (
 	"time"
 )
 
-const latestReleaseAPI = "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
+const latestReleasePage = "https://github.com/MetaCubeX/mihomo/releases/latest"
 
 type releaseAsset struct {
 	Name string `json:"name"`
@@ -36,9 +37,11 @@ type Manager struct {
 	dataDir    string
 	execPath   string
 	configPath string
+	logPath    string
 
-	mu  sync.Mutex
-	cmd *exec.Cmd
+	mu           sync.Mutex
+	cmd          *exec.Cmd
+	killExpected map[*exec.Cmd]bool
 }
 
 func NewManager(dataDir string) (*Manager, error) {
@@ -51,9 +54,11 @@ func NewManager(dataDir string) (*Manager, error) {
 		name += ".exe"
 	}
 	m := &Manager{
-		dataDir:    dataDir,
-		execPath:   filepath.Join(coreDir, name),
-		configPath: filepath.Join(dataDir, "mihomo-config.yaml"),
+		dataDir:      dataDir,
+		execPath:     filepath.Join(coreDir, name),
+		configPath:   filepath.Join(dataDir, "mihomo-config.yaml"),
+		logPath:      filepath.Join(dataDir, "mihomo.log"),
+		killExpected: map[*exec.Cmd]bool{},
 	}
 	m.tryMigrateLegacyBinary(name)
 	return m, nil
@@ -68,14 +73,24 @@ func (m *Manager) EnsureBinary(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	asset, err := pickAsset(rel.Assets)
+	assets, err := pickAssets(rel.Assets)
 	if err != nil {
 		return err
 	}
-	log.Printf("downloading core asset: %s", asset.Name)
 	tmp := filepath.Join(filepath.Dir(m.execPath), "mihomo.download.part")
-	if err := downloadFile(ctx, asset.URL, tmp); err != nil {
-		return err
+	var lastErr error
+	for i, asset := range assets {
+		log.Printf("downloading core asset (%d/%d): %s", i+1, len(assets), asset.Name)
+		if err := downloadFile(ctx, asset.URL, tmp); err != nil {
+			lastErr = err
+			log.Printf("download failed for %s: %v", asset.Name, err)
+			continue
+		}
+		lastErr = nil
+		break
+	}
+	if lastErr != nil {
+		return lastErr
 	}
 	log.Printf("extracting core binary...")
 	if err := extractBinary(tmp, m.execPath); err != nil {
@@ -117,29 +132,58 @@ func (m *Manager) tryMigrateLegacyBinary(binName string) {
 }
 
 func (m *Manager) WriteConfig(content string) error {
+	if err := os.MkdirAll(filepath.Join(m.dataDir, "proxy_providers"), 0o755); err != nil {
+		return err
+	}
 	return os.WriteFile(m.configPath, []byte(content), 0o644)
 }
 
 func (m *Manager) Start(ctx context.Context) error {
+	_ = ctx
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.cmd != nil && m.cmd.Process != nil {
 		return nil
 	}
-	cmd := exec.CommandContext(ctx, m.execPath, "-f", m.configPath)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	// Do not bind mihomo process lifecycle to request-scoped context.
+	// It should only be stopped by explicit Stop/Restart, otherwise short
+	// timeout contexts (e.g. UI reload) will kill the core unexpectedly.
+	cmd := exec.Command(m.execPath, "-f", m.configPath)
+	// Keep mihomo working directory stable so relative paths in config
+	// (e.g. ./proxy_providers/*.yaml) are resolved correctly.
+	cmd.Dir = m.dataDir
+	logf, err := os.OpenFile(m.logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		log.Printf("open mihomo log file failed, fallback to discard: %v", err)
+		cmd.Stdout = io.Discard
+		cmd.Stderr = io.Discard
+	} else {
+		cmd.Stdout = logf
+		cmd.Stderr = logf
+	}
 	if err := cmd.Start(); err != nil {
+		if logf != nil {
+			_ = logf.Close()
+		}
 		return err
 	}
 	m.cmd = cmd
 	go func() {
-		_ = cmd.Wait()
+		defer func() {
+			if logf != nil {
+				_ = logf.Close()
+			}
+		}()
+		err := cmd.Wait()
 		m.mu.Lock()
+		expected := m.killExpected[cmd]
+		delete(m.killExpected, cmd)
 		if m.cmd == cmd {
 			m.cmd = nil
 		}
 		m.mu.Unlock()
+		_ = err
+		_ = expected
 	}()
 	return nil
 }
@@ -154,32 +198,123 @@ func (m *Manager) Stop() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.cmd != nil && m.cmd.Process != nil {
+		m.killExpected[m.cmd] = true
 		_ = m.cmd.Process.Kill()
 	}
 	m.cmd = nil
 }
 
 func fetchLatestRelease(ctx context.Context) (release, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, latestReleaseAPI, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, latestReleasePage, nil)
 	if err != nil {
 		return release{}, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	req.Header.Set("User-Agent", "clash-tui/1.x")
+	resp, err := coreHTTPClient().Do(req)
 	if err != nil {
 		return release{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return release{}, fmt.Errorf("fetch release failed: %s", resp.Status)
+		return release{}, fmt.Errorf("fetch release page failed: %s", resp.Status)
 	}
-	var out release
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
 		return release{}, err
+	}
+	body := string(b)
+	tag := ""
+	if resp.Request != nil && resp.Request.URL != nil {
+		u := resp.Request.URL.String()
+		if idx := strings.Index(u, "/releases/tag/"); idx >= 0 {
+			tag = u[idx+len("/releases/tag/"):]
+			if q := strings.IndexAny(tag, "?#"); q >= 0 {
+				tag = tag[:q]
+			}
+		}
+	}
+	if tag == "" {
+		if t := parseTagFromHTML(body); t != "" {
+			tag = t
+		}
+	}
+	out := release{
+		TagName: tag,
+		Assets:  parseReleaseAssetsFromHTML(body),
+	}
+	if len(out.Assets) == 0 && out.TagName != "" {
+		out.Assets = synthesizeAssetsByTag(out.TagName)
+	}
+	if len(out.Assets) == 0 {
+		return release{}, fmt.Errorf("no downloadable assets found on release page (tag=%q)", out.TagName)
 	}
 	return out, nil
 }
 
-func pickAsset(assets []releaseAsset) (releaseAsset, error) {
+func parseTagFromHTML(html string) string {
+	// e.g. /MetaCubeX/mihomo/releases/tag/v1.19.21
+	re := regexp.MustCompile(`/MetaCubeX/mihomo/releases/tag/([A-Za-z0-9._\-]+)`)
+	m := re.FindStringSubmatch(html)
+	if len(m) >= 2 {
+		return m[1]
+	}
+	return ""
+}
+
+func parseReleaseAssetsFromHTML(html string) []releaseAsset {
+	re1 := regexp.MustCompile(`href="(/MetaCubeX/mihomo/releases/download/[^"]+)"`)
+	matches := re1.FindAllStringSubmatch(html, -1)
+	// fallback for slightly different/escaped templates
+	if len(matches) == 0 {
+		re2 := regexp.MustCompile(`(/MetaCubeX/mihomo/releases/download/[^\s"'<>]+)`)
+		raw := re2.FindAllStringSubmatch(html, -1)
+		for _, m := range raw {
+			if len(m) >= 2 {
+				matches = append(matches, []string{"", m[1]})
+			}
+		}
+	}
+	seen := map[string]struct{}{}
+	out := make([]releaseAsset, 0, len(matches))
+	for _, m := range matches {
+		if len(m) < 2 {
+			continue
+		}
+		path := strings.TrimSpace(m[1])
+		if path == "" {
+			continue
+		}
+		full := "https://github.com" + path
+		name := filepath.Base(path)
+		if _, ok := seen[full]; ok {
+			continue
+		}
+		seen[full] = struct{}{}
+		out = append(out, releaseAsset{Name: name, URL: full})
+	}
+	return out
+}
+
+func synthesizeAssetsByTag(tag string) []releaseAsset {
+	targetOS := runtime.GOOS
+	targetArch := runtime.GOARCH
+	exts := []string{".gz", ".zip"}
+	patterns := []string{
+		fmt.Sprintf("mihomo-%s-%s-compatible-%s", targetOS, targetArch, tag),
+		fmt.Sprintf("mihomo-%s-%s-%s", targetOS, targetArch, tag),
+	}
+	out := make([]releaseAsset, 0, len(patterns)*len(exts))
+	for _, p := range patterns {
+		for _, ext := range exts {
+			name := p + ext
+			url := fmt.Sprintf("https://github.com/MetaCubeX/mihomo/releases/download/%s/%s", tag, name)
+			out = append(out, releaseAsset{Name: name, URL: url})
+		}
+	}
+	return out
+}
+
+func pickAssets(assets []releaseAsset) ([]releaseAsset, error) {
 	targetOS := runtime.GOOS
 	targetArch := runtime.GOARCH
 	var candidates []releaseAsset
@@ -193,9 +328,9 @@ func pickAsset(assets []releaseAsset) (releaseAsset, error) {
 		}
 	}
 	if len(candidates) == 0 {
-		return releaseAsset{}, fmt.Errorf("no release asset for %s/%s", targetOS, targetArch)
+		return nil, fmt.Errorf("no release asset for %s/%s", targetOS, targetArch)
 	}
-	return candidates[0], nil
+	return candidates, nil
 }
 
 func downloadFile(ctx context.Context, src, dst string) error {
@@ -211,7 +346,7 @@ func downloadFile(ctx context.Context, src, dst string) error {
 	if startAt > 0 {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", startAt))
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := coreHTTPClient().Do(req)
 	if err != nil {
 		return err
 	}
@@ -398,4 +533,17 @@ func progressBar(done, total int64, width int) string {
 		return "[" + strings.Repeat("=", width) + "]"
 	}
 	return "[" + strings.Repeat("=", filled) + ">" + strings.Repeat(" ", width-filled-1) + "]"
+}
+
+func coreHTTPClient() *http.Client {
+	if os.Getenv("CLASH_TUI_INSECURE_TLS") == "1" {
+		log.Printf("warning: CLASH_TUI_INSECURE_TLS=1 enabled, TLS cert verification is disabled for core download")
+		return &http.Client{
+			Timeout: 60 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+			},
+		}
+	}
+	return &http.Client{Timeout: 60 * time.Second}
 }

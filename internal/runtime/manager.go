@@ -301,7 +301,7 @@ func (m *Manager) autoImportSubscriptionsFromLocalConfig(endpoint string) {
 			Name:         name,
 			URL:          c.URL,
 			ProviderName: providerName,
-			Enabled:      true,
+			Enabled:      false,
 		})
 		byURL[c.URL] = struct{}{}
 		byProvider[providerName] = struct{}{}
@@ -309,6 +309,21 @@ func (m *Manager) autoImportSubscriptionsFromLocalConfig(endpoint string) {
 	}
 	if added == 0 {
 		return
+	}
+	// Keep at most one enabled subscription after auto-import.
+	enabled := -1
+	for i := range items {
+		if items[i].Enabled {
+			enabled = i
+			break
+		}
+	}
+	if enabled == -1 && len(items) > 0 {
+		items[0].Enabled = true
+	} else if enabled >= 0 {
+		for i := range items {
+			items[i].Enabled = i == enabled
+		}
 	}
 	if err := m.subs.Save(items); err != nil {
 		log.Printf("save auto-import subscriptions failed: %v", err)

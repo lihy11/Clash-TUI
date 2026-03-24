@@ -92,11 +92,51 @@ func (m *Manager) Import(name, rawURL string) (Item, error) {
 		LastUpdated:  time.Time{},
 		LastError:    "",
 	}
+	// Keep a single active subscription by default to avoid conflicting
+	// provider sets after importing a new source.
+	for i := range items {
+		items[i].Enabled = false
+	}
 	items = append(items, item)
 	if err := m.Save(items); err != nil {
 		return Item{}, err
 	}
 	return item, nil
+}
+
+func (m *Manager) DeleteByProvider(provider string) error {
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		return fmt.Errorf("provider name is empty")
+	}
+	items, err := m.Load()
+	if err != nil {
+		return err
+	}
+	out := make([]Item, 0, len(items))
+	removed := false
+	for _, it := range items {
+		if it.ProviderName == provider {
+			removed = true
+			continue
+		}
+		out = append(out, it)
+	}
+	if !removed {
+		return fmt.Errorf("subscription not found: %s", provider)
+	}
+	// Ensure at least one enabled item if there are remaining entries.
+	enabled := false
+	for _, it := range out {
+		if it.Enabled {
+			enabled = true
+			break
+		}
+	}
+	if !enabled && len(out) > 0 {
+		out[0].Enabled = true
+	}
+	return m.Save(out)
 }
 
 func EnsureSecret(in string) string {
@@ -131,8 +171,9 @@ func BuildMihomoConfig(cfg config.Settings, subs []Item) (string, error) {
 		},
 	}
 
+	enabledSubs := normalizeEnabledSubs(subs)
 	providers := map[string]any{}
-	for _, s := range subs {
+	for _, s := range enabledSubs {
 		if !s.Enabled {
 			continue
 		}
@@ -167,7 +208,7 @@ func BuildMihomoConfig(cfg config.Settings, subs []Item) (string, error) {
 		root["rules"] = []string{"MATCH,DIRECT"}
 	} else {
 		use := make([]string, 0, len(providers))
-		for _, s := range subs {
+		for _, s := range enabledSubs {
 			if s.Enabled {
 				use = append(use, s.ProviderName)
 			}
@@ -194,6 +235,24 @@ func BuildMihomoConfig(cfg config.Settings, subs []Item) (string, error) {
 		return "", err
 	}
 	return string(b), nil
+}
+
+func normalizeEnabledSubs(subs []Item) []Item {
+	out := append([]Item{}, subs...)
+	firstEnabled := -1
+	for i := range out {
+		if out[i].Enabled {
+			firstEnabled = i
+			break
+		}
+	}
+	if firstEnabled == -1 {
+		return out
+	}
+	for i := range out {
+		out[i].Enabled = i == firstEnabled
+	}
+	return out
 }
 
 func guessNameFromURL(raw string) string {
