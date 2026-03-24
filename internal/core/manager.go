@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -18,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -38,6 +40,7 @@ type Manager struct {
 	execPath   string
 	configPath string
 	logPath    string
+	pidPath    string
 
 	mu           sync.Mutex
 	cmd          *exec.Cmd
@@ -58,6 +61,7 @@ func NewManager(dataDir string) (*Manager, error) {
 		execPath:     filepath.Join(coreDir, name),
 		configPath:   filepath.Join(dataDir, "mihomo-config.yaml"),
 		logPath:      filepath.Join(dataDir, "mihomo.log"),
+		pidPath:      filepath.Join(dataDir, "mihomo.pid"),
 		killExpected: map[*exec.Cmd]bool{},
 	}
 	m.tryMigrateLegacyBinary(name)
@@ -145,6 +149,11 @@ func (m *Manager) Start(ctx context.Context) error {
 	if m.cmd != nil && m.cmd.Process != nil {
 		return nil
 	}
+	if pid, ok := m.readPIDLocked(); ok && processExists(pid) {
+		log.Printf("reuse existing mihomo process pid=%d", pid)
+		return nil
+	}
+	_ = os.Remove(m.pidPath)
 	// Do not bind mihomo process lifecycle to request-scoped context.
 	// It should only be stopped by explicit Stop/Restart, otherwise short
 	// timeout contexts (e.g. UI reload) will kill the core unexpectedly.
@@ -167,6 +176,9 @@ func (m *Manager) Start(ctx context.Context) error {
 		}
 		return err
 	}
+	if err := os.WriteFile(m.pidPath, []byte(strconv.Itoa(cmd.Process.Pid)), 0o644); err != nil {
+		log.Printf("write mihomo pid file failed: %v", err)
+	}
 	m.cmd = cmd
 	go func() {
 		defer func() {
@@ -181,6 +193,7 @@ func (m *Manager) Start(ctx context.Context) error {
 		if m.cmd == cmd {
 			m.cmd = nil
 		}
+		m.cleanupPIDLocked(cmd.Process.Pid)
 		m.mu.Unlock()
 		_ = err
 		_ = expected
@@ -200,8 +213,57 @@ func (m *Manager) Stop() {
 	if m.cmd != nil && m.cmd.Process != nil {
 		m.killExpected[m.cmd] = true
 		_ = m.cmd.Process.Kill()
+		m.cleanupPIDLocked(m.cmd.Process.Pid)
+		m.cmd = nil
+		return
+	}
+	if pid, ok := m.readPIDLocked(); ok && processExists(pid) {
+		p, err := os.FindProcess(pid)
+		if err == nil {
+			_ = p.Kill()
+		}
+		m.cleanupPIDLocked(pid)
 	}
 	m.cmd = nil
+}
+
+func (m *Manager) readPIDLocked() (int, bool) {
+	b, err := os.ReadFile(m.pidPath)
+	if err != nil {
+		return 0, false
+	}
+	s := strings.TrimSpace(string(b))
+	if s == "" {
+		return 0, false
+	}
+	pid, err := strconv.Atoi(s)
+	if err != nil || pid <= 0 {
+		return 0, false
+	}
+	return pid, true
+}
+
+func (m *Manager) cleanupPIDLocked(pid int) {
+	storedPID, ok := m.readPIDLocked()
+	if !ok || storedPID != pid {
+		return
+	}
+	_ = os.Remove(m.pidPath)
+}
+
+func processExists(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		return true
+	}
+	err = p.Signal(syscall.Signal(0))
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 func fetchLatestRelease(ctx context.Context) (release, error) {

@@ -31,7 +31,6 @@ func main() {
 	} else {
 		log.Printf("runtime ready")
 	}
-	defer rt.Close()
 
 	m := ui.NewModel(cfg, rt)
 	p := tea.NewProgram(
