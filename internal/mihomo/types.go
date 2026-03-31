@@ -7,13 +7,54 @@ type VersionResponse struct {
 }
 
 type ConfigResponse struct {
-	Mode     string `json:"mode"`
-	LogLevel string `json:"log-level"`
-	IPv6     bool   `json:"ipv6"`
+	Mode           string    `json:"mode"`
+	LogLevel       string    `json:"log-level"`
+	IPv6           bool      `json:"ipv6"`
+	SystemProxy    bool      `json:"system-proxy"`
+	Tun            TunConfig `json:"tun"`
+	HasSystemProxy bool      `json:"-"`
+}
+
+func (c *ConfigResponse) UnmarshalJSON(data []byte) error {
+	type alias ConfigResponse
+	var tmp alias
+	if err := json.Unmarshal(data, &tmp); err != nil {
+		return err
+	}
+	*c = ConfigResponse(tmp)
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err == nil {
+		_, c.HasSystemProxy = raw["system-proxy"]
+	}
+	return nil
 }
 
 type UpdateConfigRequest struct {
-	Mode string `json:"mode,omitempty"`
+	Mode        string     `json:"mode,omitempty"`
+	SystemProxy *bool      `json:"system-proxy,omitempty"`
+	Tun         *TunConfig `json:"tun,omitempty"`
+}
+
+type TunConfig struct {
+	Enable bool `json:"enable"`
+}
+
+func (t *TunConfig) UnmarshalJSON(data []byte) error {
+	// /configs may return tun as a bool or an object depending on kernel/runtime.
+	var v bool
+	if err := json.Unmarshal(data, &v); err == nil {
+		t.Enable = v
+		return nil
+	}
+	var obj struct {
+		Enable bool `json:"enable"`
+	}
+	if err := json.Unmarshal(data, &obj); err == nil {
+		t.Enable = obj.Enable
+		return nil
+	}
+	t.Enable = false
+	return nil
 }
 
 type ProxiesResponse struct {

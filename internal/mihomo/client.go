@@ -115,6 +115,19 @@ func (c *Client) SetMode(ctx context.Context, mode string) error {
 	return c.doJSON(ctx, http.MethodPatch, "/configs", nil, UpdateConfigRequest{Mode: mode}, nil)
 }
 
+func (c *Client) SetSystemProxy(ctx context.Context, enable bool) error {
+	return c.doJSON(ctx, http.MethodPatch, "/configs", nil, UpdateConfigRequest{
+		SystemProxy: &enable,
+	}, nil)
+}
+
+func (c *Client) SetTun(ctx context.Context, enable bool) error {
+	tun := TunConfig{Enable: enable}
+	return c.doJSON(ctx, http.MethodPatch, "/configs", nil, UpdateConfigRequest{
+		Tun: &tun,
+	}, nil)
+}
+
 func (c *Client) GetProxies(ctx context.Context) (ProxiesResponse, error) {
 	var out ProxiesResponse
 	err := c.doJSON(ctx, http.MethodGet, "/proxies", nil, nil, &out)

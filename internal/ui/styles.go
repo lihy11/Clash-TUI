@@ -129,14 +129,15 @@ func defaultStyles(themeIdx int) styles {
 		statusBar: lipgloss.NewStyle().
 			Foreground(lipgloss.Color(t.PillText)).
 			Background(lipgloss.Color(t.Surface)).
-			Padding(0, 1).
+			Padding(0, 2).
 			Bold(true),
 		mainTabBar: lipgloss.NewStyle().
 			Foreground(lipgloss.Color(t.PillText)).
 			Background(lipgloss.Color(t.Panel)),
 		subTabBar: lipgloss.NewStyle().
 			Foreground(lipgloss.Color(t.Muted)).
-			Background(lipgloss.Color(t.Surface)),
+			Background(lipgloss.Color(t.Panel)).
+			Padding(0, 1),
 		sectionLabel: lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color(t.Primary)),
@@ -147,30 +148,32 @@ func defaultStyles(themeIdx int) styles {
 		successText: lipgloss.NewStyle().
 			Foreground(lipgloss.Color(t.Success)),
 		tab: lipgloss.NewStyle().
-			Padding(0, 1).
+			Padding(0, 2).
 			Foreground(lipgloss.Color(t.PillText)),
 		tabActive: lipgloss.NewStyle().
-			Padding(0, 1).
+			Padding(0, 2).
 			Bold(true).
-			Underline(true).
-			Foreground(lipgloss.Color(t.Secondary)),
+			Foreground(lipgloss.Color(t.Primary)).
+			Background(lipgloss.Color(t.Surface)),
 		panel: lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color(t.Panel)).
 			Background(lipgloss.Color(t.Surface)).
-			Padding(0, 1),
+			Padding(1, 2),
 		panelTitle: lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color(t.Primary)),
+			Foreground(lipgloss.Color(t.Primary)).
+			MarginBottom(1),
 		cursor: lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color(t.Surface)).
-			Background(lipgloss.Color(t.Secondary)),
+			Background(lipgloss.Color(t.Primary)),
 		selected: lipgloss.NewStyle().
 			Foreground(lipgloss.Color(t.Success)).
 			Bold(true),
 		footer: lipgloss.NewStyle().
-			Foreground(lipgloss.Color(t.Muted)),
+			Foreground(lipgloss.Color(t.Muted)).
+			Padding(0, 2),
 		pill: lipgloss.NewStyle().
 			Padding(0, 1).
 			Foreground(lipgloss.Color(t.PillText)).
@@ -185,22 +188,21 @@ func defaultStyles(themeIdx int) styles {
 			BorderForeground(lipgloss.Color(t.Accent)).
 			Bold(true),
 		subTab: lipgloss.NewStyle().
-			Padding(0, 1).
+			Padding(0, 2).
 			Foreground(lipgloss.Color(t.PillText)),
 		subTabActive: lipgloss.NewStyle().
-			Padding(0, 1).
+			Padding(0, 2).
 			Bold(true).
-			Foreground(lipgloss.Color(t.PillText)).
-			Background(lipgloss.Color(t.Primary)),
+			Foreground(lipgloss.Color(t.Primary)),
 		action: lipgloss.NewStyle().
 			Foreground(lipgloss.Color(t.CursorText)).
 			Background(lipgloss.Color(t.Primary)).
 			Bold(true).
-			Padding(0, 1),
+			Padding(0, 2),
 		overlay: lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color(t.Accent)).
-			Background(lipgloss.Color("235")).
+			Background(lipgloss.Color(t.Surface)).
 			Padding(1, 2),
 		notifTitle: lipgloss.NewStyle().
 			Bold(true).

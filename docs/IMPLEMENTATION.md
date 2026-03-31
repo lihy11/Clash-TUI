@@ -104,9 +104,12 @@
 ### 6.2 配置
 
 - `GET /configs`
-  - 读取 mode/log-level/ipv6 等基础配置
+  - 读取 mode/log-level/ipv6、`system-proxy`、`tun.enable` 等配置
 - `PATCH /configs`
   - 请求体：`{ "mode": "rule|global|direct" }`
+  - 请求体（系统代理）：`{ "system-proxy": true|false }`
+  - 请求体（TUN）：`{ "tun": { "enable": true|false } }`
+  - 兼容说明：部分内核版本 `GET /configs` 不返回 `system-proxy` 字段；UI 侧会在这种情况下使用本地状态镜像保持开关可用。
 
 ### 6.3 代理与节点
 
@@ -204,3 +207,53 @@ mixed_port: 7890
 - 增加 Profiles 切换与配置 reload
 - 增加 DNS Query 页面
 - 增加 TUN 状态可视化与切换（取决于内核能力）
+
+## 13. 2026-03-31 TUI 视觉优化落地
+
+本次基于 `tui_design_optimization.md` 完成了以下实现：
+
+- 空间留白
+  - `panel` 内边距由 `Padding(0, 1)` 调整为 `Padding(1, 2)`。
+  - `panelTitle` 增加 `MarginBottom(1)`，标题与内容分层更清晰。
+  - Header/Footer 水平内边距统一提升到 `Padding(0, 2)`，并在渲染时按内容区宽度计算，避免挤压。
+- 布局比例
+  - Proxies 页双栏布局：左侧组列表宽度由 `max(22, w/3)` 调整为 `max(26, w/4)`，释放右侧节点列表空间。
+- 主题与颜色映射
+  - Command Palette 浮层背景改为主题 `Surface`，去除硬编码 `235`。
+  - 主 Tab 激活态取消下划线，改为 `Surface` 背景 + `Primary` 前景。
+  - 光标高亮统一为 `Primary` 背景 + `Surface` 前景。
+- 次级导航与按钮
+  - SubTab 栏改为 `Panel` 背景，SubTab 项左右 Padding 增加为 `Padding(0, 2)`。
+  - SubTab 激活态采用 `Primary` 前景加粗，弱化符号前缀，提升工具栏一致性。
+  - 动作按钮（如 `Test All`）水平内边距提升到 `Padding(0, 2)`。
+- 列表对齐
+  - Rules 与 Connections 页面引入固定列宽渲染（`fitTextWidth`），实现列对齐显示，减少文本抖动和拼接拥挤感。
+
+受影响文件：
+
+- `internal/ui/styles.go`
+- `internal/ui/app.go`
+
+## 14. 2026-03-31 Dashboard 系统代理/TUN 快速开关
+
+本次在 Dashboard 增加了显眼的运行能力开关，并直连 Mihomo 内核配置接口：
+
+- 新增开关
+  - `System Proxy`（`ON/OFF`）
+  - `TUN Mode`（`ON/OFF`）
+- 交互方式
+  - 鼠标点击 Dashboard 中的按钮直接切换
+  - 键盘快捷键：`s` 切换系统代理，`n` 切换 TUN
+  - Command Palette 新增：
+    - `Toggle: System Proxy`
+    - `Toggle: TUN Mode`
+- 调用链路
+  - `internal/ui/app.go`：
+    - 新增 `setSystemProxyCmd` / `setTunCmd`
+    - 新增 `featureSetMsg` 状态回传与 UI 状态同步
+  - `internal/mihomo/client.go`：
+    - 新增 `SetSystemProxy(ctx, enable)`
+    - 新增 `SetTun(ctx, enable)`
+  - `internal/mihomo/types.go`：
+    - `ConfigResponse` 新增 `system-proxy`、`tun`
+    - `TunConfig` 兼容 `tun` 字段 bool/object 两种返回格式

@@ -47,6 +47,11 @@ type modeSetMsg struct {
 	mode string
 	err  error
 }
+type featureSetMsg struct {
+	name    string
+	enabled bool
+	err     error
+}
 type proxySetMsg struct {
 	group string
 	node  string
@@ -136,6 +141,7 @@ type model struct {
 	pollCounter   int
 	notifications []notifyItem
 	statusMini    []int
+	systemProxyOn bool
 
 	proxyPane      int
 	groupCursor    int
@@ -163,15 +169,16 @@ type model struct {
 	bodyW int
 	bodyH int
 
-	mainTabTargets       []clickTarget
-	networkTabTargets    []clickTarget
-	systemTabTargets     []clickTarget
-	profileImportTargets []clickTarget
-	overviewModeTargets  []clickTarget
-	proxyModeTargets     []clickTarget
-	proxyActionTarget    []clickTarget
-	proxyGroupTargets    []clickTarget
-	proxyNodeTargets     []clickTarget
+	mainTabTargets        []clickTarget
+	networkTabTargets     []clickTarget
+	systemTabTargets      []clickTarget
+	profileImportTargets  []clickTarget
+	overviewModeTargets   []clickTarget
+	overviewToggleTargets []clickTarget
+	proxyModeTargets      []clickTarget
+	proxyActionTarget     []clickTarget
+	proxyGroupTargets     []clickTarget
+	proxyNodeTargets      []clickTarget
 }
 
 func NewModel(cfg config.Settings, rt *runtime.Manager) *model {
@@ -247,7 +254,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
-		if msg.Action == tea.MouseActionPress || msg.Action == tea.MouseActionRelease {
+		if msg.Action == tea.MouseActionPress {
 			for _, t := range m.mainTabTargets {
 				if t.hit(msg.X, msg.Y) {
 					m.tab = t.idx
@@ -324,6 +331,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.lastErr = nil
 	case cfgMsg:
 		m.baseCfg = msg.c
+		if msg.c.HasSystemProxy {
+			m.systemProxyOn = msg.c.SystemProxy
+		}
 		m.lastErr = nil
 	case proxiesMsg:
 		m.proxies = msg.p.Proxies
@@ -410,6 +420,26 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.setStatus("mode updated")
 			m.lastErr = nil
 		}
+	case featureSetMsg:
+		if msg.err != nil {
+			m.lastErr = msg.err
+			m.setStatus(fmt.Sprintf("set %s failed", msg.name))
+		} else {
+			switch msg.name {
+			case "system-proxy":
+				m.baseCfg.SystemProxy = msg.enabled
+				m.systemProxyOn = msg.enabled
+			case "tun":
+				m.baseCfg.Tun.Enable = msg.enabled
+			}
+			state := "off"
+			if msg.enabled {
+				state = "on"
+			}
+			m.setStatus(fmt.Sprintf("%s %s", msg.name, state))
+			m.lastErr = nil
+		}
+		return m, fetchConfigCmd(m.client)
 	case proxySetMsg:
 		if msg.err != nil {
 			m.lastErr = msg.err
@@ -682,6 +712,20 @@ func (m *model) handleOverviewMouse(x, y int) tea.Cmd {
 			return tea.Batch(setModeCmd(m.client, t.text), fetchConfigCmd(m.client))
 		}
 	}
+	for _, t := range m.overviewToggleTargets {
+		if t.hit(x, y) {
+			switch t.text {
+			case "system-proxy:on":
+				return setSystemProxyCmd(m.client, true)
+			case "system-proxy:off":
+				return setSystemProxyCmd(m.client, false)
+			case "tun:on":
+				return setTunCmd(m.client, true)
+			case "tun:off":
+				return setTunCmd(m.client, false)
+			}
+		}
+	}
 	return nil
 }
 
@@ -742,6 +786,10 @@ func (m *model) handleOverviewKeys(msg tea.KeyMsg) tea.Cmd {
 		if len(m.providers) > 0 {
 			return updateProviderCmd(m.client, m.providers[m.providerCursor])
 		}
+	case "s":
+		return setSystemProxyCmd(m.client, !m.systemProxyEnabled())
+	case "n":
+		return setTunCmd(m.client, !m.baseCfg.Tun.Enable)
 	}
 	return nil
 }
@@ -951,10 +999,11 @@ func (m *model) renderHeader(w int) string {
 	down := formatRateFixed(m.rxRate)
 	right1 := fmt.Sprintf("%s %s | mode %s | v%s", connIcon, conn, mode, m.version)
 	right2 := fmt.Sprintf("↑ %s ↓ %s | core %s | theme %s", up, down, controller, themes[m.themeIndex].Name)
-	line1 := composeHeaderLine(title, right1, w)
-	line2 := composeHeaderLine("", right2, w)
-	top := m.styles.statusBar.Width(w).MaxWidth(w).Render(line1)
-	bottom := m.styles.statusBar.Width(w).MaxWidth(w).Render(line2)
+	innerW := max(1, w-m.styles.statusBar.GetHorizontalFrameSize())
+	line1 := composeHeaderLine(title, right1, innerW)
+	line2 := composeHeaderLine("", right2, innerW)
+	top := m.styles.statusBar.Width(innerW).MaxWidth(innerW).Render(line1)
+	bottom := m.styles.statusBar.Width(innerW).MaxWidth(innerW).Render(line2)
 	return lipgloss.JoinVertical(lipgloss.Left, top, bottom)
 }
 
@@ -991,7 +1040,8 @@ func (m *model) renderTabs(w, y int) string {
 
 func (m *model) renderNetwork(w, h int) string {
 	sub := m.renderSubTabs("NETWORK", networkTabs, m.networkTab, m.bodyY, &m.networkTabTargets)
-	sub = m.styles.subTabBar.Width(w).MaxWidth(w).Render(sub)
+	subW := max(1, w-m.styles.subTabBar.GetHorizontalFrameSize())
+	sub = m.styles.subTabBar.Width(subW).MaxWidth(subW).Render(sub)
 	bodyH := max(4, h-lipgloss.Height(sub)-1)
 	var body string
 	switch m.networkTab {
@@ -1007,7 +1057,8 @@ func (m *model) renderNetwork(w, h int) string {
 
 func (m *model) renderSystem(w, h int) string {
 	sub := m.renderSubTabs("SYSTEM", systemTabs, m.systemTab, m.bodyY, &m.systemTabTargets)
-	sub = m.styles.subTabBar.Width(w).MaxWidth(w).Render(sub)
+	subW := max(1, w-m.styles.subTabBar.GetHorizontalFrameSize())
+	sub = m.styles.subTabBar.Width(subW).MaxWidth(subW).Render(sub)
 	bodyH := max(4, h-lipgloss.Height(sub)-1)
 	if m.systemTab == 0 {
 		return lipgloss.JoinVertical(lipgloss.Left, sub, m.renderLogs(w, bodyH))
@@ -1020,13 +1071,13 @@ func (m *model) renderSubTabs(section string, items []string, active, y int, tar
 	out := make([]string, 0, len(items)+2)
 	sectionToken := m.styles.sectionLabel.Render(section)
 	out = append(out, sectionToken, m.styles.subtle.Render("│"))
-	cursorX := lipgloss.Width(sectionToken) + 1
+	cursorX := m.styles.subTabBar.GetHorizontalFrameSize()/2 + lipgloss.Width(sectionToken) + 1
 	for i, t := range items {
 		var token string
 		if i == active {
-			token = m.styles.subTabActive.Render("• " + t)
+			token = m.styles.subTabActive.Render(t)
 		} else {
-			token = m.styles.subTab.Render("  " + t)
+			token = m.styles.subTab.Render(t)
 		}
 		wToken := lipgloss.Width(token)
 		*targets = append(*targets, clickTarget{
@@ -1062,34 +1113,44 @@ func (m *model) renderBody(bodyW, bodyH int) string {
 
 func (m *model) renderOverview(w, h int) string {
 	m.overviewModeTargets = nil
+	m.overviewToggleTargets = nil
 
 	leftX := 0
 	leftY := m.bodyY
 	leftContentX, leftContentY := m.panelContentOrigin(leftX, leftY)
-
-	modeBlock := []string{
-		m.styles.panelTitle.Render("Dashboard"),
-		"",
-		fmt.Sprintf("Mode: %s", strings.ToUpper(m.baseCfg.Mode)),
-		m.renderOverviewModeLine(leftContentX, leftContentY+3),
-		m.styles.subtle.Render("Keyboard: r/g/d"),
-		"",
-		m.styles.panelTitle.Render("Runtime"),
-		fmt.Sprintf("Endpoint: %s", m.cfg.Endpoint),
-		fmt.Sprintf("Version: %s", m.version),
-		fmt.Sprintf("Theme: %s", themes[m.themeIndex].Name),
-		"",
-		fmt.Sprintf("Groups: %d", len(m.groups)),
-		fmt.Sprintf("Connections: %d", len(m.conns)),
-		fmt.Sprintf("Rules: %d", len(m.rules)),
-		"",
-		m.styles.panelTitle.Render("Mini Trend"),
-		m.styles.subtle.Render(m.sparkline()),
-		"",
-		m.styles.panelTitle.Render("Quick Actions"),
-		m.styles.action.Render(" : Command Palette "),
-		"F2: Cycle Theme",
+	modeBlock := make([]string, 0, 28)
+	row := 0
+	addLine := func(s string) {
+		modeBlock = append(modeBlock, s)
+		row += max(1, lipgloss.Height(s))
 	}
+
+	addLine(m.styles.panelTitle.Render("Dashboard"))
+	addLine("")
+	addLine(fmt.Sprintf("Mode: %s", strings.ToUpper(m.baseCfg.Mode)))
+	addLine(m.renderOverviewModeLine(leftContentX, leftContentY+row))
+	addLine(m.styles.subtle.Render("Keyboard: r/g/d"))
+	addLine("")
+	addLine(m.styles.panelTitle.Render("Runtime"))
+	addLine(fmt.Sprintf("Endpoint: %s", m.cfg.Endpoint))
+	addLine(fmt.Sprintf("Version: %s", m.version))
+	addLine(fmt.Sprintf("Theme: %s", themes[m.themeIndex].Name))
+	addLine(m.renderOverviewToggleLine(leftContentX, leftContentY+row))
+	addLine(m.styles.subtle.Render("s: toggle system-proxy   n: toggle tun"))
+	if !m.baseCfg.HasSystemProxy {
+		addLine(m.styles.subtle.Render("system-proxy state is tracked locally (core /configs does not expose it)"))
+	}
+	addLine("")
+	addLine(fmt.Sprintf("Groups: %d", len(m.groups)))
+	addLine(fmt.Sprintf("Connections: %d", len(m.conns)))
+	addLine(fmt.Sprintf("Rules: %d", len(m.rules)))
+	addLine("")
+	addLine(m.styles.panelTitle.Render("Mini Trend"))
+	addLine(m.styles.subtle.Render(m.sparkline()))
+	addLine("")
+	addLine(m.styles.panelTitle.Render("Quick Actions"))
+	addLine(m.styles.action.Render(" : Command Palette "))
+	addLine("F2: Cycle Theme")
 	if m.lastErr != nil {
 		modeBlock = append(modeBlock, "", m.styles.errorText.Render("Error: "+m.lastErr.Error()))
 	}
@@ -1246,13 +1307,29 @@ func (m *model) renderConnections(w, h int) string {
 	maxRows := max(1, m.panelContentHeight(h)-2)
 	start := clamp(m.connCursor-maxRows/2, 0, max(0, len(m.conns)-maxRows))
 	end := min(len(m.conns), start+maxRows)
+	contentW := max(1, w-m.styles.panel.GetHorizontalFrameSize())
+	hostW := max(16, contentW/4)
+	procW := max(12, contentW/6)
+	chainW := max(20, contentW-hostW-procW-4)
 	for i := start; i < end; i++ {
 		c := m.conns[i]
 		host := c.Metadata.Host
 		if host == "" {
 			host = c.Metadata.DestinationIP
 		}
-		label := fmt.Sprintf("%s  %s  %s", host, c.Metadata.Process, strings.Join(c.Chains, "->"))
+		process := c.Metadata.Process
+		if process == "" {
+			process = "-"
+		}
+		chain := strings.Join(c.Chains, " -> ")
+		if chain == "" {
+			chain = "-"
+		}
+		label := fmt.Sprintf("%s  %s  %s",
+			fitTextWidth(host, hostW),
+			fitTextWidth(process, procW),
+			fitTextWidth(chain, chainW),
+		)
 		if i == m.connCursor {
 			label = m.styles.cursor.Render(label)
 		}
@@ -1273,9 +1350,17 @@ func (m *model) renderRules(w, h int) string {
 	maxRows := max(1, m.panelContentHeight(h)-2)
 	start := clamp(m.rulesOffset, 0, max(0, len(m.rules)-maxRows))
 	end := min(len(m.rules), start+maxRows)
+	contentW := max(1, w-m.styles.panel.GetHorizontalFrameSize())
+	typeW := max(12, contentW/6)
+	proxyW := max(14, contentW/5)
+	payloadW := max(16, contentW-typeW-proxyW-4)
 	for i := start; i < end; i++ {
 		r := m.rules[i]
-		lines = append(lines, fmt.Sprintf("%s  %s  -> %s", r.Type, r.Payload, r.Proxy))
+		lines = append(lines, fmt.Sprintf("%s  %s  %s",
+			fitTextWidth(r.Type, typeW),
+			fitTextWidth(r.Payload, payloadW),
+			fitTextWidth("-> "+r.Proxy, proxyW),
+		))
 	}
 	return m.renderPanel(w, h, strings.Join(lines, "\n"))
 }
@@ -1378,6 +1463,8 @@ func (m *model) renderSettings(w, h int) string {
 func (m *model) renderFooter(w int) string {
 	left := "[Ctrl+K] Command Palette  [1-4] Switch Tab  [q] Quit"
 	switch m.tab {
+	case 0:
+		left = "[r g d] Mode  [s] Toggle System Proxy  [n] Toggle TUN  [Ctrl+K] Palette"
 	case 1:
 		if m.networkTab == 0 {
 			left = "[↑↓/j k] Move  [Enter] Select  [t/T] Test Delay  [r g d] Mode"
@@ -1397,7 +1484,9 @@ func (m *model) renderFooter(w int) string {
 	if msg == "" {
 		msg = "ready"
 	}
-	line := m.styles.footer.Render(left + "  │  📝 " + msg)
+	innerW := max(1, w-m.styles.footer.GetHorizontalFrameSize())
+	line := composeHeaderLine(left, "📝 "+msg, innerW)
+	line = m.styles.footer.Width(innerW).MaxWidth(innerW).Render(line)
 	return lipgloss.NewStyle().Width(w).MaxWidth(w).Render(line)
 }
 
@@ -1473,6 +1562,8 @@ func (m *model) paletteActions() []paletteAction {
 		{ID: "mode_rule", Title: "Set Mode: Rule"},
 		{ID: "mode_global", Title: "Set Mode: Global"},
 		{ID: "mode_direct", Title: "Set Mode: Direct"},
+		{ID: "toggle_system_proxy", Title: "Toggle: System Proxy"},
+		{ID: "toggle_tun", Title: "Toggle: TUN Mode"},
 		{ID: "test_all", Title: "Proxies: Test All Nodes"},
 		{ID: "update_all_subs", Title: "Profiles: Update All Subscriptions"},
 		{ID: "theme_cycle", Title: "Theme: Cycle"},
@@ -1525,6 +1616,10 @@ func (m *model) runPaletteAction(id string) tea.Cmd {
 		return tea.Batch(setModeCmd(m.client, "global"), fetchConfigCmd(m.client))
 	case "mode_direct":
 		return tea.Batch(setModeCmd(m.client, "direct"), fetchConfigCmd(m.client))
+	case "toggle_system_proxy":
+		return setSystemProxyCmd(m.client, !m.systemProxyEnabled())
+	case "toggle_tun":
+		return setTunCmd(m.client, !m.baseCfg.Tun.Enable)
 	case "test_all":
 		if len(m.nodes) > 0 {
 			return testAllNodesCmd(m.client, m.nodes)
@@ -1736,7 +1831,7 @@ func (m *model) proxyPanels(w, h int) (leftX, leftY, leftW, leftH, rightX, right
 		return
 	}
 
-	leftW = max(22, w/3)
+	leftW = max(26, w/4)
 	leftH = h
 	rightX = leftW + 1
 	rightY = leftY
@@ -1825,6 +1920,72 @@ func (m *model) renderOverviewModeLine(contentX, y int) string {
 	return line
 }
 
+func (m *model) renderOverviewToggleLine(contentX, y int) string {
+	systemOn := m.systemProxyEnabled()
+	tunOn := m.baseCfg.Tun.Enable
+
+	type toggleToken struct {
+		id    string
+		label string
+		on    bool
+	}
+	tokens := []toggleToken{
+		{id: "system-proxy", label: "System Proxy", on: systemOn},
+		{id: "tun", label: "TUN Mode", on: tunOn},
+	}
+
+	prefix := "Toggles: "
+	line := prefix
+	cursorX := contentX + lipgloss.Width(prefix)
+	for i, t := range tokens {
+		label := m.styles.subTab.Render(t.label)
+		sw := m.renderWebToggle(t.on)
+		token := label + " " + sw
+		line += token
+
+		wToken := lipgloss.Width(token)
+		m.overviewToggleTargets = append(m.overviewToggleTargets, clickTarget{
+			x1:   cursorX,
+			y1:   y,
+			x2:   cursorX + wToken,
+			y2:   y + 1,
+			text: fmt.Sprintf("%s:%s", t.id, map[bool]string{true: "off", false: "on"}[t.on]),
+		})
+		cursorX += wToken
+		if i < len(tokens)-1 {
+			sep := "   "
+			line += sep
+			cursorX += lipgloss.Width(sep)
+		}
+	}
+	return line
+}
+
+func (m *model) renderWebToggle(on bool) string {
+	t := themes[m.themeIndex]
+	if on {
+		return lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color(t.CursorText)).
+			Background(lipgloss.Color(t.Success)).
+			Padding(0, 1).
+			Render("ON  ●")
+	}
+	return lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color(t.PillText)).
+		Background(lipgloss.Color(t.Panel)).
+		Padding(0, 1).
+		Render("○  OFF")
+}
+
+func (m *model) systemProxyEnabled() bool {
+	if m.baseCfg.HasSystemProxy {
+		return m.baseCfg.SystemProxy
+	}
+	return m.systemProxyOn
+}
+
 func (m *model) renderProxyActionLine(contentX, y int) string {
 	prefix := "Action: "
 	// 使用 styles.action 渲染按钮，让它看起来像一个真实的按钮块
@@ -1849,7 +2010,7 @@ func (m *model) panelContentHeight(outerHeight int) int {
 }
 
 func (m *model) panelContentOrigin(panelX, panelY int) (x, y int) {
-	return panelX + 2, panelY + 1
+	return panelX + 3, panelY + 2
 }
 
 func (m *model) renderPanel(outerW, outerH int, content string) string {
@@ -2148,6 +2309,30 @@ func setModeCmd(c *mihomo.Client, mode string) tea.Cmd {
 		defer cancel()
 		err := c.SetMode(ctx, mode)
 		return modeSetMsg{mode: mode, err: err}
+	}
+}
+
+func setSystemProxyCmd(c *mihomo.Client, enable bool) tea.Cmd {
+	return func() tea.Msg {
+		if c == nil {
+			return featureSetMsg{name: "system-proxy", enabled: enable, err: fmt.Errorf("client is nil")}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		err := c.SetSystemProxy(ctx, enable)
+		return featureSetMsg{name: "system-proxy", enabled: enable, err: err}
+	}
+}
+
+func setTunCmd(c *mihomo.Client, enable bool) tea.Cmd {
+	return func() tea.Msg {
+		if c == nil {
+			return featureSetMsg{name: "tun", enabled: enable, err: fmt.Errorf("client is nil")}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		err := c.SetTun(ctx, enable)
+		return featureSetMsg{name: "tun", enabled: enable, err: err}
 	}
 }
 
