@@ -122,7 +122,8 @@ func defaultStyles(themeIdx int) styles {
 	}
 	t := themes[themeIdx]
 	return styles{
-		app: lipgloss.NewStyle(),
+		app: lipgloss.NewStyle().
+			Background(lipgloss.Color(t.Surface)),
 		header: lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color(t.Primary)),
@@ -173,6 +174,7 @@ func defaultStyles(themeIdx int) styles {
 			Bold(true),
 		footer: lipgloss.NewStyle().
 			Foreground(lipgloss.Color(t.Muted)).
+			Background(lipgloss.Color(t.Surface)).
 			Padding(0, 2),
 		pill: lipgloss.NewStyle().
 			Padding(0, 1).

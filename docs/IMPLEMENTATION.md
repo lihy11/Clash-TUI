@@ -257,3 +257,27 @@ mixed_port: 7890
   - `internal/mihomo/types.go`：
     - `ConfigResponse` 新增 `system-proxy`、`tun`
     - `TunConfig` 兼容 `tun` 字段 bool/object 两种返回格式
+
+## 15. 2026-03-31 布局空间利用与 Dashboard 挤压换行修复
+
+针对 `png/shot.png` 暴露的问题，本次完成了 3 处直接修复：
+
+- 终端空间利用率
+  - `Network` 与 `System` 页面 body 高度计算由 `h-subH-1` 修正为 `h-subH`，避免无意义预留导致底部可视区缩水。
+  - `styles.app` 改为带主题 `Surface` 背景，`View()` 末尾强制渲染为 `width x height` 画布，修复透明终端下顶部/底部“露底”和右侧空白不一致观感。
+- 顶部可用区域
+  - `cmd/clash-tui/main.go` 移除了启动 TUI 前的常规 `log.Printf` 输出，降低在非 AltScreen/兼容性较差终端中的顶部占行问题。
+- Dashboard 挤压换行
+  - `internal/ui/app.go` 中 `Switch` 与 `Toggles` 行改为按面板内容宽度自适应分行（而非硬拼一行），并同步修正点击热区坐标，确保换行后鼠标交互仍准确。
+- Header/Footer 宽度边界
+  - Header/Footer 在进行左右对齐前额外预留 2 列安全宽度，并将 footer 状态前缀由 emoji 改为 ASCII（`status`），降低不同终端字体宽度判定差异导致的自动换行概率。
+ - 宽高语义修正（关键）
+   - 修复 `lipgloss.Style.Width/Height` 使用语义错误：此前把 `outer - frameSize` 传给 `Width/Height`，导致边框块体被二次缩小，出现右侧锯齿空白和底部大空白。
+   - 现统一改为 `Width(outerW)` / `Height(outerH)`，文本可用宽度仍按内容区单独计算（`outer - frameSize`）。
+
+受影响文件：
+
+- `internal/ui/app.go`
+- `internal/ui/styles.go`
+- `cmd/clash-tui/main.go`
+- `internal/ui/layout_test.go`

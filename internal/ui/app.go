@@ -589,9 +589,11 @@ func (m *model) View() string {
 	ui := lipgloss.JoinVertical(lipgloss.Left, head, tabline, body, foot)
 	ui = m.styles.app.Render(ui)
 	base := lipgloss.Place(m.width, m.height, lipgloss.Left, lipgloss.Top, ui)
+	base = m.styles.app.Width(m.width).Height(m.height).Render(base)
 	if m.paletteOpen {
 		overlay := m.renderPalette(max(54, m.width/2), max(10, m.height/2))
-		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, overlay)
+		placed := lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, overlay)
+		return m.styles.app.Width(m.width).Height(m.height).Render(placed)
 	}
 	return base
 }
@@ -998,12 +1000,16 @@ func (m *model) renderHeader(w int) string {
 	up := formatRateFixed(m.txRate)
 	down := formatRateFixed(m.rxRate)
 	right1 := fmt.Sprintf("%s %s | mode %s | v%s", connIcon, conn, mode, m.version)
-	right2 := fmt.Sprintf("↑ %s ↓ %s | core %s | theme %s", up, down, controller, themes[m.themeIndex].Name)
-	innerW := max(1, w-m.styles.statusBar.GetHorizontalFrameSize())
-	line1 := composeHeaderLine(title, right1, innerW)
-	line2 := composeHeaderLine("", right2, innerW)
-	top := m.styles.statusBar.Width(innerW).MaxWidth(innerW).Render(line1)
-	bottom := m.styles.statusBar.Width(innerW).MaxWidth(innerW).Render(line2)
+	right2 := fmt.Sprintf("up %s down %s | core %s | theme %s", up, down, controller, themes[m.themeIndex].Name)
+	totalW := max(1, w)
+	innerW := max(1, totalW-m.styles.statusBar.GetHorizontalFrameSize())
+	// Keep a small safety margin for terminals whose glyph width differs
+	// from runewidth/lipgloss assumptions, preventing visual auto-wrap.
+	lineW := max(1, innerW-2)
+	line1 := composeHeaderLine(title, right1, lineW)
+	line2 := composeHeaderLine("", right2, lineW)
+	top := m.styles.statusBar.Width(totalW).MaxWidth(totalW).Render(line1)
+	bottom := m.styles.statusBar.Width(totalW).MaxWidth(totalW).Render(line2)
 	return lipgloss.JoinVertical(lipgloss.Left, top, bottom)
 }
 
@@ -1040,9 +1046,9 @@ func (m *model) renderTabs(w, y int) string {
 
 func (m *model) renderNetwork(w, h int) string {
 	sub := m.renderSubTabs("NETWORK", networkTabs, m.networkTab, m.bodyY, &m.networkTabTargets)
-	subW := max(1, w-m.styles.subTabBar.GetHorizontalFrameSize())
+	subW := max(1, w)
 	sub = m.styles.subTabBar.Width(subW).MaxWidth(subW).Render(sub)
-	bodyH := max(4, h-lipgloss.Height(sub)-1)
+	bodyH := max(4, h-lipgloss.Height(sub))
 	var body string
 	switch m.networkTab {
 	case 0:
@@ -1057,9 +1063,9 @@ func (m *model) renderNetwork(w, h int) string {
 
 func (m *model) renderSystem(w, h int) string {
 	sub := m.renderSubTabs("SYSTEM", systemTabs, m.systemTab, m.bodyY, &m.systemTabTargets)
-	subW := max(1, w-m.styles.subTabBar.GetHorizontalFrameSize())
+	subW := max(1, w)
 	sub = m.styles.subTabBar.Width(subW).MaxWidth(subW).Render(sub)
-	bodyH := max(4, h-lipgloss.Height(sub)-1)
+	bodyH := max(4, h-lipgloss.Height(sub))
 	if m.systemTab == 0 {
 		return lipgloss.JoinVertical(lipgloss.Left, sub, m.renderLogs(w, bodyH))
 	}
@@ -1117,6 +1123,11 @@ func (m *model) renderOverview(w, h int) string {
 
 	leftX := 0
 	leftY := m.bodyY
+	leftW := w
+	if w >= 90 {
+		leftW = w / 2
+	}
+	leftContentW := max(1, leftW-m.styles.panel.GetHorizontalFrameSize())
 	leftContentX, leftContentY := m.panelContentOrigin(leftX, leftY)
 	modeBlock := make([]string, 0, 28)
 	row := 0
@@ -1128,14 +1139,18 @@ func (m *model) renderOverview(w, h int) string {
 	addLine(m.styles.panelTitle.Render("Dashboard"))
 	addLine("")
 	addLine(fmt.Sprintf("Mode: %s", strings.ToUpper(m.baseCfg.Mode)))
-	addLine(m.renderOverviewModeLine(leftContentX, leftContentY+row))
+	for _, line := range m.renderOverviewModeLines(leftContentX, leftContentY+row, leftContentW) {
+		addLine(line)
+	}
 	addLine(m.styles.subtle.Render("Keyboard: r/g/d"))
 	addLine("")
 	addLine(m.styles.panelTitle.Render("Runtime"))
 	addLine(fmt.Sprintf("Endpoint: %s", m.cfg.Endpoint))
 	addLine(fmt.Sprintf("Version: %s", m.version))
 	addLine(fmt.Sprintf("Theme: %s", themes[m.themeIndex].Name))
-	addLine(m.renderOverviewToggleLine(leftContentX, leftContentY+row))
+	for _, line := range m.renderOverviewToggleLines(leftContentX, leftContentY+row, leftContentW) {
+		addLine(line)
+	}
 	addLine(m.styles.subtle.Render("s: toggle system-proxy   n: toggle tun"))
 	if !m.baseCfg.HasSystemProxy {
 		addLine(m.styles.subtle.Render("system-proxy state is tracked locally (core /configs does not expose it)"))
@@ -1164,7 +1179,7 @@ func (m *model) renderOverview(w, h int) string {
 		bottom := m.renderPanel(w, bottomH, m.renderProviderLines())
 		return lipgloss.JoinVertical(lipgloss.Left, top, " ", bottom)
 	}
-	leftW := w / 2
+	leftW = w / 2
 	rightW := w - leftW - 1
 	left := m.renderPanel(leftW, h, strings.Join(modeBlock, "\n"))
 	right := m.renderPanel(rightW, h, m.renderNotificationCenter())
@@ -1484,10 +1499,12 @@ func (m *model) renderFooter(w int) string {
 	if msg == "" {
 		msg = "ready"
 	}
-	innerW := max(1, w-m.styles.footer.GetHorizontalFrameSize())
-	line := composeHeaderLine(left, "📝 "+msg, innerW)
-	line = m.styles.footer.Width(innerW).MaxWidth(innerW).Render(line)
-	return lipgloss.NewStyle().Width(w).MaxWidth(w).Render(line)
+	totalW := max(1, w)
+	innerW := max(1, totalW-m.styles.footer.GetHorizontalFrameSize())
+	lineW := max(1, innerW-2)
+	line := composeHeaderLine(left, "status "+msg, lineW)
+	line = m.styles.footer.Width(totalW).MaxWidth(totalW).Render(line)
+	return lipgloss.NewStyle().Width(totalW).MaxWidth(totalW).Render(line)
 }
 
 func (m *model) pillForMode() string {
@@ -1881,7 +1898,7 @@ func (m *model) renderProxyModeLine(contentX, y int) string {
 	return line
 }
 
-func (m *model) renderOverviewModeLine(contentX, y int) string {
+func (m *model) renderOverviewModeLines(contentX, y, maxW int) []string {
 	current := strings.ToLower(m.baseCfg.Mode)
 	type modeToken struct {
 		label string
@@ -1894,33 +1911,49 @@ func (m *model) renderOverviewModeLine(contentX, y int) string {
 	}
 
 	prefix := "Switch: "
-	line := prefix
+	sep := " "
+	currentY := y
+	currentLine := prefix
 	cursorX := contentX + lipgloss.Width(prefix)
+	lines := make([]string, 0, 2)
 	for i, t := range tokens {
 		token := "[○ " + t.label + "]"
 		if t.mode == current {
 			token = "[✓ " + strings.ToUpper(t.label) + "]"
 		}
+		addSep := ""
+		if i > 0 {
+			addSep = sep
+		}
+		projectedW := lipgloss.Width(currentLine + addSep + token)
+		if i > 0 && projectedW > maxW {
+			lines = append(lines, currentLine)
+			currentY++
+			currentLine = strings.Repeat(" ", lipgloss.Width(prefix))
+			cursorX = contentX + lipgloss.Width(prefix)
+			addSep = ""
+		}
+		if addSep != "" {
+			currentLine += addSep
+			cursorX += lipgloss.Width(addSep)
+		}
 		startX := cursorX
 		endX := startX + lipgloss.Width(token)
 		m.overviewModeTargets = append(m.overviewModeTargets, clickTarget{
 			x1:   startX,
-			y1:   y,
+			y1:   currentY,
 			x2:   endX,
-			y2:   y + 1,
+			y2:   currentY + 1,
 			text: t.mode,
 		})
-		line += token
+		currentLine += token
 		cursorX = endX
-		if i < len(tokens)-1 {
-			line += " "
-			cursorX++
-		}
 	}
-	return line
+	lines = append(lines, currentLine)
+	return lines
 }
 
-func (m *model) renderOverviewToggleLine(contentX, y int) string {
+func (m *model) renderOverviewToggleLines(contentX, y, maxW int) []string {
 	systemOn := m.systemProxyEnabled()
 	tunOn := m.baseCfg.Tun.Enable
 
@@ -1935,30 +1968,45 @@ func (m *model) renderOverviewToggleLine(contentX, y int) string {
 	}
 
 	prefix := "Toggles: "
-	line := prefix
+	sep := "   "
+	currentY := y
+	currentLine := prefix
 	cursorX := contentX + lipgloss.Width(prefix)
+	lines := make([]string, 0, 2)
 	for i, t := range tokens {
 		label := m.styles.subTab.Render(t.label)
 		sw := m.renderWebToggle(t.on)
 		token := label + " " + sw
-		line += token
+		addSep := ""
+		if i > 0 {
+			addSep = sep
+		}
+		projectedW := lipgloss.Width(currentLine + addSep + token)
+		if i > 0 && projectedW > maxW {
+			lines = append(lines, currentLine)
+			currentY++
+			currentLine = strings.Repeat(" ", lipgloss.Width(prefix))
+			cursorX = contentX + lipgloss.Width(prefix)
+			addSep = ""
+		}
+		if addSep != "" {
+			currentLine += addSep
+			cursorX += lipgloss.Width(addSep)
+		}
+		currentLine += token
 
 		wToken := lipgloss.Width(token)
 		m.overviewToggleTargets = append(m.overviewToggleTargets, clickTarget{
 			x1:   cursorX,
-			y1:   y,
+			y1:   currentY,
 			x2:   cursorX + wToken,
-			y2:   y + 1,
+			y2:   currentY + 1,
 			text: fmt.Sprintf("%s:%s", t.id, map[bool]string{true: "off", false: "on"}[t.on]),
 		})
 		cursorX += wToken
-		if i < len(tokens)-1 {
-			sep := "   "
-			line += sep
-			cursorX += lipgloss.Width(sep)
-		}
 	}
-	return line
+	lines = append(lines, currentLine)
+	return lines
 }
 
 func (m *model) renderWebToggle(on bool) string {
@@ -2014,19 +2062,19 @@ func (m *model) panelContentOrigin(panelX, panelY int) (x, y int) {
 }
 
 func (m *model) renderPanel(outerW, outerH int, content string) string {
-	cw := max(1, outerW-m.styles.panel.GetHorizontalFrameSize())
-	ch := max(1, outerH-m.styles.panel.GetVerticalFrameSize())
+	w := max(1, outerW)
+	h := max(1, outerH)
 	return m.styles.panel.
-		Width(cw).
-		Height(ch).
-		MaxWidth(cw).
-		MaxHeight(ch).
+		Width(w).
+		Height(h).
+		MaxWidth(w).
+		MaxHeight(h).
 		Render(content)
 }
 
 func (m *model) renderPanelFocused(outerW, outerH int, content string, focused bool) string {
-	cw := max(1, outerW-m.styles.panel.GetHorizontalFrameSize())
-	ch := max(1, outerH-m.styles.panel.GetVerticalFrameSize())
+	w := max(1, outerW)
+	h := max(1, outerH)
 	st := m.styles.panel
 	if focused {
 		st = st.BorderForeground(lipgloss.Color(themes[m.themeIndex].Primary))
@@ -2034,10 +2082,10 @@ func (m *model) renderPanelFocused(outerW, outerH int, content string, focused b
 		st = st.BorderForeground(lipgloss.Color(themes[m.themeIndex].Panel))
 	}
 	return st.
-		Width(cw).
-		Height(ch).
-		MaxWidth(cw).
-		MaxHeight(ch).
+		Width(w).
+		Height(h).
+		MaxWidth(w).
+		MaxHeight(h).
 		Render(content)
 }
 
