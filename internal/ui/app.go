@@ -8,7 +8,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/help"
+	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/list"
+	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -97,12 +102,43 @@ type clickTarget struct {
 	text string
 }
 
+type profileListItem struct {
+	title    string
+	desc     string
+	filter   string
+	provider string
+}
+
+func (i profileListItem) Title() string       { return i.title }
+func (i profileListItem) Description() string { return i.desc }
+func (i profileListItem) FilterValue() string { return i.filter }
+
+type selectorItem struct {
+	id    string
+	title string
+	desc  string
+}
+
+func (i selectorItem) Title() string       { return i.title }
+func (i selectorItem) Description() string { return i.desc }
+func (i selectorItem) FilterValue() string { return i.title + " " + i.desc }
+
+type footerKeys struct {
+	items []key.Binding
+}
+
+func (k footerKeys) ShortHelp() []key.Binding { return k.items }
+func (k footerKeys) FullHelp() [][]key.Binding {
+	return [][]key.Binding{k.items}
+}
+
 func (t clickTarget) hit(x, y int) bool {
 	return x >= t.x1 && x < t.x2 && y >= t.y1 && y < t.y2
 }
 
 type model struct {
 	styles styles
+	help   help.Model
 
 	width  int
 	height int
@@ -164,6 +200,17 @@ type model struct {
 	paletteOpen    bool
 	paletteInput   textinput.Model
 	paletteCursor  int
+	langOpen       bool
+	langCursor     int
+	selectorKind   string
+	selectorTitle  string
+	selectorLV     list.Model
+
+	rulesTable table.Model
+	connsTable table.Model
+	logsView   viewport.Model
+	notifView  viewport.Model
+	profileLV  list.Model
 
 	bodyY int
 	bodyW int
@@ -179,12 +226,15 @@ type model struct {
 	proxyActionTarget     []clickTarget
 	proxyGroupTargets     []clickTarget
 	proxyNodeTargets      []clickTarget
+	langChipTarget        clickTarget
+	selectorItemTargets   []clickTarget
 }
 
 func NewModel(cfg config.Settings, rt *runtime.Manager) *model {
 	client, err := mihomo.NewClient(cfg.Endpoint, cfg.Secret)
 	m := &model{
 		styles:         defaultStyles(defaultThemeIndex),
+		help:           help.New(),
 		cfg:            cfg,
 		client:         client,
 		rt:             rt,
@@ -201,7 +251,23 @@ func NewModel(cfg config.Settings, rt *runtime.Manager) *model {
 		notifications:  make([]notifyItem, 0, 30),
 		statusMini:     make([]int, 0, 60),
 		nodePageSize:   12,
+		rulesTable:     table.New(),
+		connsTable:     table.New(),
+		logsView:       viewport.New(0, 0),
+		notifView:      viewport.New(0, 0),
 	}
+	d := list.NewDefaultDelegate()
+	m.profileLV = list.New([]list.Item{}, d, 0, 0)
+	m.profileLV.SetShowHelp(false)
+	m.profileLV.SetShowTitle(false)
+	m.profileLV.SetShowFilter(false)
+	m.profileLV.SetShowPagination(false)
+	m.profileLV.SetShowStatusBar(false)
+	m.selectorLV = list.New([]list.Item{}, d, 0, 0)
+	m.selectorLV.SetShowHelp(false)
+	m.selectorLV.SetShowFilter(false)
+	m.selectorLV.SetShowPagination(false)
+	m.selectorLV.SetShowStatusBar(false)
 	m.initSettingsInputs()
 	m.initImportInputs()
 	m.initPaletteInput()
@@ -211,6 +277,45 @@ func NewModel(cfg config.Settings, rt *runtime.Manager) *model {
 		m.setStatus("init client failed")
 	}
 	return m
+}
+
+func (m *model) syncProfileListItems() {
+	items := make([]list.Item, 0, len(m.subscriptions))
+	for _, s := range m.subscriptions {
+		state := m.t("enabled", "启用")
+		if !s.Enabled {
+			state = m.t("disabled", "禁用")
+		}
+		title := s.Name
+		if title == "" {
+			title = s.ProviderName
+		}
+		desc := fmt.Sprintf("[%s] %s=%s", state, m.t("provider", "提供者"), s.ProviderName)
+		items = append(items, profileListItem{
+			title:    title,
+			desc:     desc,
+			filter:   title + " " + s.ProviderName,
+			provider: s.ProviderName,
+		})
+	}
+	_ = m.profileLV.SetItems(items)
+	if len(items) == 0 {
+		return
+	}
+	idx := clamp(m.profileCursor, 0, len(items)-1)
+	m.profileLV.Select(idx)
+}
+
+func (m *model) selectedProfileProvider() string {
+	it := m.profileLV.SelectedItem()
+	if it == nil {
+		return ""
+	}
+	p, ok := it.(profileListItem)
+	if !ok {
+		return ""
+	}
+	return p.provider
 }
 
 func (m *model) Init() tea.Cmd {
@@ -236,25 +341,38 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resizeInputs()
 		return m, nil
 	case tea.MouseMsg:
+		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			if m.langOpen {
+				if handled, cmd := m.handleSelectorMouse(msg.X, msg.Y); handled {
+					return m, cmd
+				}
+			}
+			if m.langChipTarget.hit(msg.X, msg.Y) {
+				m.toggleLanguage()
+				return m, nil
+			}
+		}
 		if m.tab == 1 && m.networkTab == 0 {
 			if msg.Button == tea.MouseButtonWheelUp {
 				if len(m.nodes) > 0 {
 					m.proxyPane = 1
-					m.nodeCursor = clamp(m.nodeCursor-1, 0, max(0, len(m.nodes)-1))
-					m.ensureNodeVisible()
+					page := max(1, m.nodePageSize)
+					maxOffset := max(0, len(m.nodes)-page)
+					m.nodeOffset = clamp(m.nodeOffset-1, 0, maxOffset)
 				}
 				return m, nil
 			}
 			if msg.Button == tea.MouseButtonWheelDown {
 				if len(m.nodes) > 0 {
 					m.proxyPane = 1
-					m.nodeCursor = clamp(m.nodeCursor+1, 0, max(0, len(m.nodes)-1))
-					m.ensureNodeVisible()
+					page := max(1, m.nodePageSize)
+					maxOffset := max(0, len(m.nodes)-page)
+					m.nodeOffset = clamp(m.nodeOffset+1, 0, maxOffset)
 				}
 				return m, nil
 			}
 		}
-		if msg.Action == tea.MouseActionPress {
+		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 			for _, t := range m.mainTabTargets {
 				if t.hit(msg.X, msg.Y) {
 					m.tab = t.idx
@@ -294,6 +412,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if m.paletteOpen {
 			return m, m.handlePaletteKeys(msg)
+		}
+		if m.langOpen {
+			return m, m.handleGlobalKeys(msg)
 		}
 		if m.tab == 2 && m.importing {
 			deferredCmd = m.handleProfilesKeys(msg)
@@ -360,6 +481,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case subsMsg:
 		m.subscriptions = msg.items
 		m.profileCursor = clamp(m.profileCursor, 0, max(0, len(m.subscriptions)-1))
+		m.syncProfileListItems()
 		m.lastErr = nil
 	case importSubMsg:
 		if msg.err != nil {
@@ -595,10 +717,27 @@ func (m *model) View() string {
 		placed := lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, overlay)
 		return m.styles.app.Width(m.width).Height(m.height).Render(placed)
 	}
+	if m.langOpen {
+		overlay := m.renderSelectorOverlay(max(36, m.width/3), max(10, m.height/3))
+		placed := lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, overlay)
+		return m.styles.app.Width(m.width).Height(m.height).Render(placed)
+	}
 	return base
 }
 
 func (m *model) handleGlobalKeys(msg tea.KeyMsg) tea.Cmd {
+	if m.langOpen {
+		switch msg.String() {
+		case "esc":
+			m.langOpen = false
+			return nil
+		case "enter":
+			return m.applySelectorChoice()
+		}
+		var cmd tea.Cmd
+		m.selectorLV, cmd = m.selectorLV.Update(msg)
+		return cmd
+	}
 	switch msg.String() {
 	case "ctrl+c", "q":
 		if m.client != nil {
@@ -610,6 +749,9 @@ func (m *model) handleGlobalKeys(msg tea.KeyMsg) tea.Cmd {
 		m.paletteCursor = 0
 		m.paletteInput.SetValue("")
 		m.paletteInput.Focus()
+		return nil
+	case "L":
+		m.toggleLanguage()
 		return nil
 	case "tab", "right":
 		m.tab = (m.tab + 1) % len(tabs)
@@ -640,7 +782,10 @@ func (m *model) handleGlobalKeys(msg tea.KeyMsg) tea.Cmd {
 			return nil
 		}
 	case "F2", "f2":
-		m.cycleTheme()
+		m.openSelector("theme")
+		return nil
+	case "m":
+		m.openSelector("mode")
 		return nil
 	case "r":
 		if m.tab == 0 || (m.tab == 1 && m.networkTab == 0) {
@@ -780,6 +925,12 @@ func (m *model) handleProxyMouse(x, y int) tea.Cmd {
 
 func (m *model) handleOverviewKeys(msg tea.KeyMsg) tea.Cmd {
 	switch msg.String() {
+	case "up", "k", "down", "j", "pgup", "pgdown", "ctrl+u", "ctrl+d":
+		var cmd tea.Cmd
+		m.notifView, cmd = m.notifView.Update(msg)
+		return cmd
+	}
+	switch msg.String() {
 	case "up", "k":
 		m.providerCursor = clamp(m.providerCursor-1, 0, max(0, len(m.providers)-1))
 	case "down", "j":
@@ -797,37 +948,37 @@ func (m *model) handleOverviewKeys(msg tea.KeyMsg) tea.Cmd {
 }
 
 func (m *model) handleConnectionKeys(msg tea.KeyMsg) tea.Cmd {
+	var cmd tea.Cmd
+	m.connsTable, cmd = m.connsTable.Update(msg)
+	m.connCursor = m.connsTable.Cursor()
 	switch msg.String() {
-	case "up", "k":
-		m.connCursor = clamp(m.connCursor-1, 0, max(0, len(m.conns)-1))
-	case "down", "j":
-		m.connCursor = clamp(m.connCursor+1, 0, max(0, len(m.conns)-1))
 	case "x":
 		if len(m.conns) > 0 {
-			return closeConnCmd(m.client, m.conns[m.connCursor].ID)
+			i := clamp(m.connsTable.Cursor(), 0, max(0, len(m.conns)-1))
+			return closeConnCmd(m.client, m.conns[i].ID)
 		}
 	case "X":
 		return closeAllConnCmd(m.client)
 	}
-	return nil
+	return cmd
 }
 
 func (m *model) handleRuleKeys(msg tea.KeyMsg) tea.Cmd {
-	switch msg.String() {
-	case "up", "k":
-		m.rulesOffset = clamp(m.rulesOffset-1, 0, max(0, len(m.rules)-1))
-	case "down", "j":
-		m.rulesOffset = clamp(m.rulesOffset+1, 0, max(0, len(m.rules)-1))
-	}
-	return nil
+	var cmd tea.Cmd
+	m.rulesTable, cmd = m.rulesTable.Update(msg)
+	m.rulesOffset = m.rulesTable.Cursor()
+	return cmd
 }
 
 func (m *model) handleLogKeys(msg tea.KeyMsg) tea.Cmd {
+	var cmd tea.Cmd
+	m.logsView, cmd = m.logsView.Update(msg)
 	switch msg.String() {
 	case "c":
 		m.logs = m.logs[:0]
+		m.logsView.SetContent("")
 	}
-	return nil
+	return cmd
 }
 
 func (m *model) handleSettingsKeys(msg tea.KeyMsg) tea.Cmd {
@@ -867,24 +1018,23 @@ func (m *model) handleProfilesKeys(msg tea.KeyMsg) tea.Cmd {
 	}
 
 	switch msg.String() {
-	case "up", "k":
-		m.profileCursor = clamp(m.profileCursor-1, 0, max(0, len(m.subscriptions)-1))
-	case "down", "j":
-		m.profileCursor = clamp(m.profileCursor+1, 0, max(0, len(m.subscriptions)-1))
+	case "up", "k", "down", "j":
+		var cmd tea.Cmd
+		m.profileLV, cmd = m.profileLV.Update(msg)
+		m.profileCursor = m.profileLV.Index()
+		return cmd
 	case "i":
 		m.importing = true
 		m.importFocus = 1
 		m.importName.SetValue("")
 		m.importURL.SetValue("")
 	case "u":
-		if len(m.subscriptions) > 0 {
-			it := m.subscriptions[m.profileCursor]
-			return updateProviderCmd2(m.client, it.ProviderName)
+		if p := m.selectedProfileProvider(); p != "" {
+			return updateProviderCmd2(m.client, p)
 		}
 	case "x":
-		if len(m.subscriptions) > 0 {
-			it := m.subscriptions[m.profileCursor]
-			return deleteSubCmd(m.rt, it.ProviderName)
+		if p := m.selectedProfileProvider(); p != "" {
+			return deleteSubCmd(m.rt, p)
 		}
 	case "U":
 		if len(m.subscriptions) > 0 {
@@ -895,7 +1045,10 @@ func (m *model) handleProfilesKeys(msg tea.KeyMsg) tea.Cmd {
 			return tea.Batch(cmds...)
 		}
 	}
-	return nil
+	var cmd tea.Cmd
+	m.profileLV, cmd = m.profileLV.Update(msg)
+	m.profileCursor = m.profileLV.Index()
+	return cmd
 }
 
 func (m *model) handlePaletteKeys(msg tea.KeyMsg) tea.Cmd {
@@ -980,6 +1133,7 @@ func (m *model) applySettings() tea.Cmd {
 }
 
 func (m *model) renderHeader(w int) string {
+	m.langChipTarget = clickTarget{}
 	title := "Clash-TUI"
 	mode := strings.ToUpper(strings.TrimSpace(m.baseCfg.Mode))
 	if mode == "" {
@@ -999,8 +1153,13 @@ func (m *model) renderHeader(w int) string {
 	}
 	up := formatRateFixed(m.txRate)
 	down := formatRateFixed(m.rxRate)
-	right1 := fmt.Sprintf("%s %s | mode %s | v%s", connIcon, conn, mode, m.version)
-	right2 := fmt.Sprintf("up %s down %s | core %s | theme %s", up, down, controller, themes[m.themeIndex].Name)
+	chip := m.renderLanguageChip()
+	right1Prefix := fmt.Sprintf("%s %s | %s %s | ", connIcon, conn, m.t("mode", "模式"), mode)
+	right1 := right1Prefix + chip
+	right2 := fmt.Sprintf("%s %s %s %s | %s %s | %s %s",
+		m.t("up", "上行"), up, m.t("down", "下行"), down,
+		m.t("core", "内核"), controller,
+		m.t("theme", "主题"), themes[m.themeIndex].Name)
 	totalW := max(1, w)
 	innerW := max(1, totalW-m.styles.statusBar.GetHorizontalFrameSize())
 	// Keep a small safety margin for terminals whose glyph width differs
@@ -1010,6 +1169,20 @@ func (m *model) renderHeader(w int) string {
 	line2 := composeHeaderLine("", right2, lineW)
 	top := m.styles.statusBar.Width(totalW).MaxWidth(totalW).Render(line1)
 	bottom := m.styles.statusBar.Width(totalW).MaxWidth(totalW).Render(line2)
+	// Approximate chip hit box on header first line for mouse toggle.
+	leftW := lipgloss.Width(strings.TrimSpace(title))
+	gap := 2
+	rightW := max(0, lineW-leftW-gap)
+	if lw := lipgloss.Width(right1); lw <= rightW {
+		statusPadLeft := 2 // statusBar uses Padding(0, 2)
+		chipX := statusPadLeft + leftW + gap + (rightW - lw) + lipgloss.Width(right1Prefix)
+		m.langChipTarget = clickTarget{
+			x1: chipX,
+			y1: 0,
+			x2: chipX + lipgloss.Width(chip),
+			y2: 1,
+		}
+	}
 	return lipgloss.JoinVertical(lipgloss.Left, top, bottom)
 }
 
@@ -1017,12 +1190,12 @@ func (m *model) renderTabs(w, y int) string {
 	m.mainTabTargets = nil
 	out := make([]string, 0, len(tabs))
 	cursorX := 0
-	for i, t := range tabs {
+	for i := range tabs {
 		icon := ""
 		if i < len(tabIcons) {
 			icon = tabIcons[i] + " "
 		}
-		label := fmt.Sprintf("%s%s", icon, t)
+		label := fmt.Sprintf("%s%s", icon, m.mainTabLabel(i))
 		var token string
 		if i == m.tab {
 			token = m.styles.tabActive.Render(" " + label + " ")
@@ -1045,7 +1218,11 @@ func (m *model) renderTabs(w, y int) string {
 }
 
 func (m *model) renderNetwork(w, h int) string {
-	sub := m.renderSubTabs("NETWORK", networkTabs, m.networkTab, m.bodyY, &m.networkTabTargets)
+	items := make([]string, 0, len(networkTabs))
+	for i := range networkTabs {
+		items = append(items, m.networkTabLabel(i))
+	}
+	sub := m.renderSubTabs(m.t("NETWORK", "网络"), items, m.networkTab, m.bodyY, &m.networkTabTargets)
 	subW := max(1, w)
 	sub = m.styles.subTabBar.Width(subW).MaxWidth(subW).Render(sub)
 	bodyH := max(4, h-lipgloss.Height(sub))
@@ -1062,7 +1239,11 @@ func (m *model) renderNetwork(w, h int) string {
 }
 
 func (m *model) renderSystem(w, h int) string {
-	sub := m.renderSubTabs("SYSTEM", systemTabs, m.systemTab, m.bodyY, &m.systemTabTargets)
+	items := make([]string, 0, len(systemTabs))
+	for i := range systemTabs {
+		items = append(items, m.systemTabLabel(i))
+	}
+	sub := m.renderSubTabs(m.t("SYSTEM", "系统"), items, m.systemTab, m.bodyY, &m.systemTabTargets)
 	subW := max(1, w)
 	sub = m.styles.subTabBar.Width(subW).MaxWidth(subW).Render(sub)
 	bodyH := max(4, h-lipgloss.Height(sub))
@@ -1101,7 +1282,7 @@ func (m *model) renderSubTabs(section string, items []string, active, y int, tar
 
 func (m *model) renderBody(bodyW, bodyH int) string {
 	if m.loading {
-		return m.renderPanel(bodyW, bodyH, "Loading Mihomo data...")
+		return m.renderPanel(bodyW, bodyH, m.t("Loading Mihomo data...", "正在加载 Mihomo 数据..."))
 	}
 	switch m.tab {
 	case 0:
@@ -1136,38 +1317,38 @@ func (m *model) renderOverview(w, h int) string {
 		row += max(1, lipgloss.Height(s))
 	}
 
-	addLine(m.styles.panelTitle.Render("Dashboard"))
+	addLine(m.styles.panelTitle.Render(m.t("Dashboard", "总览")))
 	addLine("")
-	addLine(fmt.Sprintf("Mode: %s", strings.ToUpper(m.baseCfg.Mode)))
+	addLine(fmt.Sprintf("%s: %s", m.t("Mode", "模式"), strings.ToUpper(m.baseCfg.Mode)))
 	for _, line := range m.renderOverviewModeLines(leftContentX, leftContentY+row, leftContentW) {
 		addLine(line)
 	}
-	addLine(m.styles.subtle.Render("Keyboard: r/g/d"))
+	addLine(m.styles.subtle.Render(m.t("Keyboard: r/g/d", "快捷键: r/g/d")))
 	addLine("")
-	addLine(m.styles.panelTitle.Render("Runtime"))
-	addLine(fmt.Sprintf("Endpoint: %s", m.cfg.Endpoint))
-	addLine(fmt.Sprintf("Version: %s", m.version))
-	addLine(fmt.Sprintf("Theme: %s", themes[m.themeIndex].Name))
+	addLine(m.styles.panelTitle.Render(m.t("Runtime", "运行时")))
+	addLine(fmt.Sprintf("%s: %s", m.t("Endpoint", "端点"), m.cfg.Endpoint))
+	addLine(fmt.Sprintf("%s: %s", m.t("Version", "版本"), m.version))
+	addLine(fmt.Sprintf("%s: %s", m.t("Theme", "主题"), themes[m.themeIndex].Name))
 	for _, line := range m.renderOverviewToggleLines(leftContentX, leftContentY+row, leftContentW) {
 		addLine(line)
 	}
-	addLine(m.styles.subtle.Render("s: toggle system-proxy   n: toggle tun"))
+	addLine(m.styles.subtle.Render(m.t("s: toggle system-proxy   n: toggle tun", "s: 切换系统代理   n: 切换 TUN")))
 	if !m.baseCfg.HasSystemProxy {
-		addLine(m.styles.subtle.Render("system-proxy state is tracked locally (core /configs does not expose it)"))
+		addLine(m.styles.subtle.Render(m.t("system-proxy state is tracked locally (core /configs does not expose it)", "system-proxy 状态由本地维护（内核 /configs 未暴露该字段）")))
 	}
 	addLine("")
-	addLine(fmt.Sprintf("Groups: %d", len(m.groups)))
-	addLine(fmt.Sprintf("Connections: %d", len(m.conns)))
-	addLine(fmt.Sprintf("Rules: %d", len(m.rules)))
+	addLine(fmt.Sprintf("%s: %d", m.t("Groups", "代理组"), len(m.groups)))
+	addLine(fmt.Sprintf("%s: %d", m.t("Connections", "连接"), len(m.conns)))
+	addLine(fmt.Sprintf("%s: %d", m.t("Rules", "规则"), len(m.rules)))
 	addLine("")
-	addLine(m.styles.panelTitle.Render("Mini Trend"))
+	addLine(m.styles.panelTitle.Render(m.t("Mini Trend", "迷你趋势")))
 	addLine(m.styles.subtle.Render(m.sparkline()))
 	addLine("")
-	addLine(m.styles.panelTitle.Render("Quick Actions"))
-	addLine(m.styles.action.Render(" : Command Palette "))
-	addLine("F2: Cycle Theme")
+	addLine(m.styles.panelTitle.Render(m.t("Quick Actions", "快捷操作")))
+	addLine(m.styles.action.Render(m.t(" : Command Palette ", " : 命令面板 ")))
+	addLine(m.t("F2: Cycle Theme", "F2: 切换主题"))
 	if m.lastErr != nil {
-		modeBlock = append(modeBlock, "", m.styles.errorText.Render("Error: "+m.lastErr.Error()))
+		modeBlock = append(modeBlock, "", m.styles.errorText.Render(m.t("Error: ", "错误: ")+m.lastErr.Error()))
 	}
 	if w < 90 {
 		topH := h / 2
@@ -1182,16 +1363,16 @@ func (m *model) renderOverview(w, h int) string {
 	leftW = w / 2
 	rightW := w - leftW - 1
 	left := m.renderPanel(leftW, h, strings.Join(modeBlock, "\n"))
-	right := m.renderPanel(rightW, h, m.renderNotificationCenter())
+	right := m.renderPanel(rightW, h, m.renderNotificationCenter(rightW, h))
 	return lipgloss.JoinHorizontal(lipgloss.Top, left, " ", right)
 }
 
 func (m *model) renderProviderLines() string {
-	providerLines := []string{m.styles.panelTitle.Render("Providers")}
+	providerLines := []string{m.styles.panelTitle.Render(m.t("Providers", "提供者"))}
 	if len(m.providers) == 0 {
-		providerLines = append(providerLines, "", "No providers")
+		providerLines = append(providerLines, "", m.t("No providers", "暂无提供者"))
 	} else {
-		providerLines = append(providerLines, m.styles.subtle.Render("u: update provider"))
+		providerLines = append(providerLines, m.styles.subtle.Render(m.t("u: update provider", "u: 更新 provider")))
 		providerLines = append(providerLines, "")
 		for i, p := range m.providers {
 			item := m.providersState[p]
@@ -1221,7 +1402,8 @@ func (m *model) renderProxies(w, h int) string {
 	leftContentX, leftContentY := m.panelContentOrigin(leftX, leftY)
 	rightContentX, rightContentY := m.panelContentOrigin(rightX, rightY)
 
-	leftLines := []string{m.styles.panelTitle.Render("Proxy Groups")}
+	leftLines := []string{m.styles.panelTitle.Render(m.t("Proxy Groups", "代理组"))}
+	leftRow := lipgloss.Height(leftLines[0])
 	for i, g := range m.groups {
 		typ := strings.ToUpper(strings.TrimSpace(m.proxies[g].Type))
 		if typ == "" {
@@ -1232,7 +1414,7 @@ func (m *model) renderProxies(w, h int) string {
 			line = m.styles.cursor.Render("┃ " + line)
 		}
 		leftLines = append(leftLines, line)
-		row := 1 + i
+		row := leftRow
 		m.proxyGroupTargets = append(m.proxyGroupTargets, clickTarget{
 			x1:  leftContentX,
 			y1:  leftContentY + row,
@@ -1240,29 +1422,37 @@ func (m *model) renderProxies(w, h int) string {
 			y2:  leftContentY + row + 1,
 			idx: i,
 		})
+		leftRow += max(1, lipgloss.Height(line))
 	}
 	if len(m.groups) == 0 {
 		leftLines = append(leftLines, "No proxy groups")
 	}
 	if m.proxyPane == 0 {
-		leftLines = append(leftLines, "", m.styles.subtle.Render("Focus: groups (h/l to switch)"))
+		leftLines = append(leftLines, "", m.styles.subtle.Render(m.t("Focus: groups (h/l to switch)", "焦点: 组列表（h/l 切换）")))
 	}
 
-	rightLines := []string{m.styles.panelTitle.Render("Nodes")}
-	modeLine := m.renderProxyModeLine(rightContentX, rightContentY+1)
+	rightLines := []string{m.styles.panelTitle.Render(m.t("Nodes", "节点"))}
+	rightRow := lipgloss.Height(rightLines[0])
+	modeLine := m.renderProxyModeLine(rightContentX, rightContentY+rightRow)
 	rightLines = append(rightLines, modeLine)
-	actionLine := m.renderProxyActionLine(rightContentX, rightContentY+2)
+	rightRow += max(1, lipgloss.Height(modeLine))
+	actionLine := m.renderProxyActionLine(rightContentX, rightContentY+rightRow)
 	rightLines = append(rightLines, actionLine)
+	rightRow += max(1, lipgloss.Height(actionLine))
 	group := ""
 	now := ""
 	if len(m.groups) > 0 {
 		group = m.groups[m.groupCursor]
 		now = m.proxies[group].Now
-		rightLines = append(rightLines, m.styles.subtle.Render("Group: "+group))
+		groupLine := m.styles.subtle.Render(m.t("Group", "组") + ": " + group)
+		rightLines = append(rightLines, groupLine)
+		rightRow += max(1, lipgloss.Height(groupLine))
 	} else {
-		rightLines = append(rightLines, m.styles.subtle.Render("Group: -"))
+		groupLine := m.styles.subtle.Render(m.t("Group", "组") + ": -")
+		rightLines = append(rightLines, groupLine)
+		rightRow += max(1, lipgloss.Height(groupLine))
 	}
-	nodeStartRow := 4
+	nodeStartRow := rightRow
 	maxNodeRows := max(1, m.panelContentHeight(rightH)-nodeStartRow)
 	if m.proxyPane == 1 {
 		maxNodeRows = max(1, maxNodeRows-2)
@@ -1297,10 +1487,10 @@ func (m *model) renderProxies(w, h int) string {
 		})
 	}
 	if len(m.nodes) == 0 {
-		rightLines = append(rightLines, "No nodes")
+		rightLines = append(rightLines, m.t("No nodes", "暂无节点"))
 	}
 	if m.proxyPane == 1 {
-		rightLines = append(rightLines, "", m.styles.subtle.Render("Enter: switch node   t: test one   T: test all"))
+		rightLines = append(rightLines, "", m.styles.subtle.Render(m.t("Enter: switch node   t: test one   T: test all", "Enter: 切换节点   t: 测试当前   T: 全部测试")))
 	}
 	left := m.renderPanelFocused(leftW, leftH, strings.Join(leftLines, "\n"), m.proxyPane == 0)
 	right := m.renderPanelFocused(rightW, rightH, strings.Join(rightLines, "\n"), m.proxyPane == 1)
@@ -1312,22 +1502,20 @@ func (m *model) renderProxies(w, h int) string {
 
 func (m *model) renderConnections(w, h int) string {
 	lines := []string{
-		m.styles.panelTitle.Render("Connections"),
-		m.styles.subtle.Render("x: close selected   X: close all"),
+		m.styles.panelTitle.Render(m.t("Connections", "连接")),
+		m.styles.subtle.Render(m.t("x: close selected   X: close all", "x: 关闭当前   X: 全部关闭")),
 	}
 	if len(m.conns) == 0 {
-		lines = append(lines, "", "No active connections")
+		lines = append(lines, "", m.t("No active connections", "没有活动连接"))
 		return m.renderPanel(w, h, strings.Join(lines, "\n"))
 	}
-	maxRows := max(1, m.panelContentHeight(h)-2)
-	start := clamp(m.connCursor-maxRows/2, 0, max(0, len(m.conns)-maxRows))
-	end := min(len(m.conns), start+maxRows)
 	contentW := max(1, w-m.styles.panel.GetHorizontalFrameSize())
-	hostW := max(16, contentW/4)
+	contentH := max(3, m.panelContentHeight(h)-2)
+	hostW := max(16, contentW/5)
 	procW := max(12, contentW/6)
-	chainW := max(20, contentW-hostW-procW-4)
-	for i := start; i < end; i++ {
-		c := m.conns[i]
+	chainW := max(20, contentW-hostW-procW-6)
+	rows := make([]table.Row, 0, len(m.conns))
+	for _, c := range m.conns {
 		host := c.Metadata.Host
 		if host == "" {
 			host = c.Metadata.DestinationIP
@@ -1340,54 +1528,79 @@ func (m *model) renderConnections(w, h int) string {
 		if chain == "" {
 			chain = "-"
 		}
-		label := fmt.Sprintf("%s  %s  %s",
+		rows = append(rows, table.Row{
 			fitTextWidth(host, hostW),
 			fitTextWidth(process, procW),
 			fitTextWidth(chain, chainW),
-		)
-		if i == m.connCursor {
-			label = m.styles.cursor.Render(label)
-		}
-		lines = append(lines, label)
+		})
 	}
+	m.connsTable.Focus()
+	m.connsTable.SetColumns([]table.Column{
+		{Title: m.t("Host", "主机"), Width: hostW},
+		{Title: m.t("Process", "进程"), Width: procW},
+		{Title: m.t("Chain", "链路"), Width: chainW},
+	})
+	m.connsTable.SetRows(rows)
+	m.connsTable.SetWidth(contentW)
+	m.connsTable.SetHeight(contentH)
+	m.connsTable.SetCursor(clamp(m.connCursor, 0, max(0, len(rows)-1)))
+	m.connCursor = m.connsTable.Cursor()
+	lines = append(lines, m.connsTable.View())
 	return m.renderPanel(w, h, strings.Join(lines, "\n"))
 }
 
 func (m *model) renderRules(w, h int) string {
 	lines := []string{
-		m.styles.panelTitle.Render("Rules"),
-		m.styles.subtle.Render("j/k scroll"),
+		m.styles.panelTitle.Render(m.t("Rules", "规则")),
+		m.styles.subtle.Render(m.t("j/k scroll", "j/k 滚动")),
 	}
 	if len(m.rules) == 0 {
-		lines = append(lines, "", "No rules")
+		lines = append(lines, "", m.t("No rules", "暂无规则"))
 		return m.renderPanel(w, h, strings.Join(lines, "\n"))
 	}
-	maxRows := max(1, m.panelContentHeight(h)-2)
-	start := clamp(m.rulesOffset, 0, max(0, len(m.rules)-maxRows))
-	end := min(len(m.rules), start+maxRows)
 	contentW := max(1, w-m.styles.panel.GetHorizontalFrameSize())
+	contentH := max(3, m.panelContentHeight(h)-2)
 	typeW := max(12, contentW/6)
 	proxyW := max(14, contentW/5)
-	payloadW := max(16, contentW-typeW-proxyW-4)
-	for i := start; i < end; i++ {
-		r := m.rules[i]
-		lines = append(lines, fmt.Sprintf("%s  %s  %s",
+	payloadW := max(16, contentW-typeW-proxyW-6)
+	rows := make([]table.Row, 0, len(m.rules))
+	for _, r := range m.rules {
+		rows = append(rows, table.Row{
 			fitTextWidth(r.Type, typeW),
 			fitTextWidth(r.Payload, payloadW),
 			fitTextWidth("-> "+r.Proxy, proxyW),
-		))
+		})
 	}
+	m.rulesTable.Focus()
+	m.rulesTable.SetColumns([]table.Column{
+		{Title: m.t("Type", "类型"), Width: typeW},
+		{Title: m.t("Payload", "匹配"), Width: payloadW},
+		{Title: m.t("Proxy", "策略"), Width: proxyW},
+	})
+	m.rulesTable.SetRows(rows)
+	m.rulesTable.SetWidth(contentW)
+	m.rulesTable.SetHeight(contentH)
+	m.rulesTable.SetCursor(clamp(m.rulesOffset, 0, max(0, len(rows)-1)))
+	m.rulesOffset = m.rulesTable.Cursor()
+	lines = append(lines, m.rulesTable.View())
 	return m.renderPanel(w, h, strings.Join(lines, "\n"))
 }
 
 func (m *model) renderLogs(w, h int) string {
 	lines := []string{
-		m.styles.panelTitle.Render("Logs"),
-		m.styles.subtle.Render("Streaming /logs (c to clear)"),
+		m.styles.panelTitle.Render(m.t("Logs", "日志")),
+		m.styles.subtle.Render(m.t("Streaming /logs (c to clear)", "实时 /logs（按 c 清空）")),
 	}
-	maxRows := max(1, m.panelContentHeight(h)-2)
-	start := max(0, len(m.logs)-maxRows)
-	lines = append(lines, m.logs[start:]...)
+	contentW := max(1, w-m.styles.panel.GetHorizontalFrameSize())
+	contentH := max(3, m.panelContentHeight(h)-2)
+	stickBottom := m.logsView.AtBottom()
+	m.logsView.Width = contentW
+	m.logsView.Height = contentH
+	m.logsView.SetContent(strings.Join(m.logs, "\n"))
+	if stickBottom {
+		m.logsView.GotoBottom()
+	}
+	lines = append(lines, m.logsView.View())
 	return m.renderPanel(w, h, strings.Join(lines, "\n"))
 }
 
@@ -1395,28 +1608,30 @@ func (m *model) renderProfiles(w, h int) string {
 	m.profileImportTargets = nil
 
 	lines := []string{
-		m.styles.panelTitle.Render("Profiles / Subscriptions"),
-		m.styles.subtle.Render("i: import   x: delete selected   u: update selected   U: update all"),
+		m.styles.panelTitle.Render(m.t("Profiles / Subscriptions", "配置 / 订阅")),
+		m.styles.subtle.Render(m.t("i: import   x: delete selected   u: update selected   U: update all", "i: 导入   x: 删除当前   u: 更新当前   U: 全部更新")),
 		"",
 	}
 	if len(m.subscriptions) == 0 {
-		lines = append(lines, "No subscriptions. Press i to import.")
+		lines = append(lines, m.t("No subscriptions. Press i to import.", "暂无订阅，按 i 导入。"))
 	} else {
-		for i, s := range m.subscriptions {
-			state := "enabled"
-			if !s.Enabled {
-				state = "disabled"
-			}
-			line := fmt.Sprintf("%s  [%s]  provider=%s", s.Name, state, s.ProviderName)
-			if i == m.profileCursor {
-				line = m.styles.cursor.Render(line)
-			}
-			lines = append(lines, line)
-			if !s.LastUpdated.IsZero() {
-				lines = append(lines, m.styles.subtle.Render("  updated: "+s.LastUpdated.Format(time.RFC3339)))
-			}
-			if s.LastError != "" {
-				lines = append(lines, m.styles.errorText.Render("  error: "+s.LastError))
+		contentW := max(1, w-m.styles.panel.GetHorizontalFrameSize())
+		contentH := max(3, m.panelContentHeight(h)-5)
+		m.profileLV.SetSize(contentW, contentH)
+		m.profileLV.Select(clamp(m.profileCursor, 0, max(0, len(m.subscriptions)-1)))
+		lines = append(lines, m.profileLV.View())
+		if p := m.selectedProfileProvider(); p != "" {
+			for _, s := range m.subscriptions {
+				if s.ProviderName != p {
+					continue
+				}
+				if !s.LastUpdated.IsZero() {
+					lines = append(lines, m.styles.subtle.Render(m.t("updated", "更新时间")+": "+s.LastUpdated.Format(time.RFC3339)))
+				}
+				if s.LastError != "" {
+					lines = append(lines, m.styles.errorText.Render(m.t("error", "错误")+": "+s.LastError))
+				}
+				break
 			}
 		}
 	}
@@ -1426,12 +1641,12 @@ func (m *model) renderProfiles(w, h int) string {
 		contentW := max(1, w-m.styles.panel.GetHorizontalFrameSize())
 		base := len(lines)
 		lines = append(lines, "")
-		lines = append(lines, m.styles.panelTitle.Render("Import Subscription"))
-		lines = append(lines, "Name (optional)")
+		lines = append(lines, m.styles.panelTitle.Render(m.t("Import Subscription", "导入订阅")))
+		lines = append(lines, m.t("Name (optional)", "名称（可选）"))
 		lines = append(lines, m.importName.View())
 		lines = append(lines, "URL")
 		lines = append(lines, m.importURL.View())
-		lines = append(lines, m.styles.subtle.Render("Enter: confirm  Esc: cancel"))
+		lines = append(lines, m.styles.subtle.Render(m.t("Enter: confirm  Esc: cancel", "Enter: 确认  Esc: 取消")))
 		m.profileImportTargets = append(m.profileImportTargets,
 			clickTarget{
 				x1:  contentX,
@@ -1455,46 +1670,28 @@ func (m *model) renderProfiles(w, h int) string {
 
 func (m *model) renderSettings(w, h int) string {
 	lines := []string{
-		m.styles.panelTitle.Render("Settings"),
-		m.styles.subtle.Render("tab/shift+tab move focus  s save and reconnect"),
+		m.styles.panelTitle.Render(m.t("Settings", "设置")),
+		m.styles.subtle.Render(m.t("tab/shift+tab move focus  s save and reconnect", "tab/shift+tab 移动焦点  s 保存并重连")),
 		"",
-		"Controller Endpoint",
+		m.t("Controller Endpoint", "控制器地址"),
 		m.settingsInputs[0].View(),
 		"",
-		"Secret",
+		m.t("Secret", "密钥"),
 		m.settingsInputs[1].View(),
 		"",
-		"Poll Interval (seconds)",
+		m.t("Poll Interval (seconds)", "轮询间隔（秒）"),
 		m.settingsInputs[2].View(),
 		"",
-		"Log Level (debug/info/warning/error)",
+		m.t("Log Level (debug/info/warning/error)", "日志级别（debug/info/warning/error）"),
 		m.settingsInputs[3].View(),
 		"",
 	}
-	lines = append(lines, m.styles.successText.Render("Config file: ~/.config/clash-tui/config.yaml"))
+	lines = append(lines, m.styles.successText.Render(m.t("Config file: ~/.config/clash-tui/config.yaml", "配置文件: ~/.config/clash-tui/config.yaml")))
 	return m.renderPanel(w, h, strings.Join(lines, "\n"))
 }
 
 func (m *model) renderFooter(w int) string {
-	left := "[Ctrl+K] Command Palette  [1-4] Switch Tab  [q] Quit"
-	switch m.tab {
-	case 0:
-		left = "[r g d] Mode  [s] Toggle System Proxy  [n] Toggle TUN  [Ctrl+K] Palette"
-	case 1:
-		if m.networkTab == 0 {
-			left = "[↑↓/j k] Move  [Enter] Select  [t/T] Test Delay  [r g d] Mode"
-		} else if m.networkTab == 2 {
-			left = "[↑↓/j k] Move  [x] Close  [X] Close All"
-		}
-	case 2:
-		left = "[i] Import  [u] Update Selected  [U] Update All"
-	case 3:
-		if m.systemTab == 1 {
-			left = "[Tab] Next Field  [Shift+Tab] Prev Field  [s] Save"
-		} else {
-			left = "[c] Clear Logs  [Tab] Switch"
-		}
-	}
+	binds := m.footerBindings()
 	msg := strings.TrimSpace(m.status)
 	if msg == "" {
 		msg = "ready"
@@ -1502,9 +1699,216 @@ func (m *model) renderFooter(w int) string {
 	totalW := max(1, w)
 	innerW := max(1, totalW-m.styles.footer.GetHorizontalFrameSize())
 	lineW := max(1, innerW-2)
-	line := composeHeaderLine(left, "status "+msg, lineW)
+	m.help.Width = lineW
+	helpLine := m.help.View(footerKeys{items: binds})
+	line := composeHeaderLine(helpLine, m.t("status ", "状态 ")+msg, lineW)
 	line = m.styles.footer.Width(totalW).MaxWidth(totalW).Render(line)
 	return lipgloss.NewStyle().Width(totalW).MaxWidth(totalW).Render(line)
+}
+
+func (m *model) footerBindings() []key.Binding {
+	switch m.tab {
+	case 0:
+		return []key.Binding{
+			key.NewBinding(key.WithKeys("r", "g", "d"), key.WithHelp("r/g/d", m.t("mode", "模式"))),
+			key.NewBinding(key.WithKeys("s"), key.WithHelp("s", m.t("sys-proxy", "系统代理"))),
+			key.NewBinding(key.WithKeys("n"), key.WithHelp("n", "TUN")),
+			key.NewBinding(key.WithKeys("ctrl+k"), key.WithHelp("ctrl+k", m.t("palette", "面板"))),
+		}
+	case 1:
+		if m.networkTab == 2 {
+			return []key.Binding{
+				key.NewBinding(key.WithKeys("up", "down", "j", "k"), key.WithHelp("↑↓/j k", m.t("move", "移动"))),
+				key.NewBinding(key.WithKeys("x"), key.WithHelp("x", m.t("close", "关闭"))),
+				key.NewBinding(key.WithKeys("X"), key.WithHelp("X", m.t("close all", "全部关闭"))),
+			}
+		}
+		if m.networkTab == 0 {
+			return []key.Binding{
+				key.NewBinding(key.WithKeys("up", "down", "j", "k"), key.WithHelp("↑↓/j k", m.t("move", "移动"))),
+				key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", m.t("select", "选择"))),
+				key.NewBinding(key.WithKeys("t", "T"), key.WithHelp("t/T", m.t("delay test", "延迟测试"))),
+				key.NewBinding(key.WithKeys("r", "g", "d"), key.WithHelp("r/g/d", m.t("mode", "模式"))),
+			}
+		}
+	case 2:
+		return []key.Binding{
+			key.NewBinding(key.WithKeys("i"), key.WithHelp("i", m.t("import", "导入"))),
+			key.NewBinding(key.WithKeys("u"), key.WithHelp("u", m.t("update", "更新"))),
+			key.NewBinding(key.WithKeys("U"), key.WithHelp("U", m.t("update all", "更新全部"))),
+			key.NewBinding(key.WithKeys("x"), key.WithHelp("x", m.t("delete", "删除"))),
+		}
+	case 3:
+		if m.systemTab == 1 {
+			return []key.Binding{
+				key.NewBinding(key.WithKeys("tab", "shift+tab"), key.WithHelp("tab/shift+tab", m.t("focus", "焦点"))),
+				key.NewBinding(key.WithKeys("s"), key.WithHelp("s", m.t("save", "保存"))),
+			}
+		}
+		return []key.Binding{
+			key.NewBinding(key.WithKeys("up", "down", "j", "k"), key.WithHelp("↑↓/j k", m.t("scroll", "滚动"))),
+			key.NewBinding(key.WithKeys("c"), key.WithHelp("c", m.t("clear", "清空"))),
+		}
+	}
+	return []key.Binding{
+		key.NewBinding(key.WithKeys("ctrl+k"), key.WithHelp("ctrl+k", m.t("palette", "面板"))),
+		key.NewBinding(key.WithKeys("1", "2", "3", "4"), key.WithHelp("1-4", m.t("tabs", "标签"))),
+		key.NewBinding(key.WithKeys("L"), key.WithHelp("L", m.t("language", "语言"))),
+		key.NewBinding(key.WithKeys("q"), key.WithHelp("q", m.t("quit", "退出"))),
+	}
+}
+
+func (m *model) renderLanguageChip() string {
+	// Keep this chip strictly single-line/plain text; bordered styles (pill)
+	// are multi-line blocks and will break header line layout.
+	if m.lang() == "en" {
+		return m.t("Lang", "语言") + ": [EN●] [中文○]"
+	}
+	return m.t("Lang", "语言") + ": [EN○] [中文●]"
+}
+
+func (m *model) toggleLanguage() {
+	code := "en"
+	if m.lang() == "en" {
+		code = "zh-CN"
+	}
+	m.cfg.Language = code
+	m.syncProfileListItems()
+	if err := config.Save(m.cfg); err != nil {
+		m.setStatus(m.tf("save language failed: %v", "保存语言失败: %v", err))
+		return
+	}
+	m.setStatus(m.tf("language switched to %s", "语言已切换为 %s", m.langLabel(code)))
+}
+
+func (m *model) openSelector(kind string) {
+	m.langOpen = true
+	m.selectorKind = kind
+	m.selectorTitle = kind
+	items := make([]list.Item, 0, 8)
+	selectedIdx := 0
+	switch kind {
+	case "language":
+		m.selectorTitle = m.t("Language", "语言")
+		items = []list.Item{
+			selectorItem{id: "en", title: "English", desc: "English UI"},
+			selectorItem{id: "zh-CN", title: "中文", desc: "中文界面"},
+		}
+		if m.lang() == "zh-CN" {
+			selectedIdx = 1
+		}
+	case "theme":
+		m.selectorTitle = m.t("Theme", "主题")
+		for i, th := range themes {
+			items = append(items, selectorItem{id: strconv.Itoa(i), title: th.Name, desc: ""})
+			if i == m.themeIndex {
+				selectedIdx = i
+			}
+		}
+	case "mode":
+		m.selectorTitle = m.t("Mode", "模式")
+		items = []list.Item{
+			selectorItem{id: "rule", title: m.t("Rule", "规则"), desc: ""},
+			selectorItem{id: "global", title: m.t("Global", "全局"), desc: ""},
+			selectorItem{id: "direct", title: m.t("Direct", "直连"), desc: ""},
+		}
+		switch strings.ToLower(m.baseCfg.Mode) {
+		case "global":
+			selectedIdx = 1
+		case "direct":
+			selectedIdx = 2
+		}
+	}
+	_ = m.selectorLV.SetItems(items)
+	m.selectorLV.Title = m.selectorTitle
+	m.selectorLV.SetShowTitle(true)
+	m.selectorLV.Select(selectedIdx)
+}
+
+func (m *model) applySelectorChoice() tea.Cmd {
+	it := m.selectorLV.SelectedItem()
+	if it == nil {
+		m.langOpen = false
+		return nil
+	}
+	opt, ok := it.(selectorItem)
+	if !ok {
+		m.langOpen = false
+		return nil
+	}
+	m.langOpen = false
+	switch m.selectorKind {
+	case "language":
+		m.cfg.Language = opt.id
+		m.syncProfileListItems()
+		if err := config.Save(m.cfg); err != nil {
+			m.setStatus(m.tf("save language failed: %v", "保存语言失败: %v", err))
+			return nil
+		}
+		m.setStatus(m.tf("language switched to %s", "语言已切换为 %s", m.langLabel(opt.id)))
+		return nil
+	case "theme":
+		idx, err := strconv.Atoi(opt.id)
+		if err == nil && idx >= 0 && idx < len(themes) {
+			m.themeIndex = idx
+			m.styles = defaultStyles(m.themeIndex)
+			m.setStatus(m.t("theme updated", "主题已更新"))
+		}
+		return nil
+	case "mode":
+		return tea.Batch(setModeCmd(m.client, opt.id), fetchConfigCmd(m.client))
+	default:
+		return nil
+	}
+}
+
+func (m *model) renderSelectorOverlay(w, h int) string {
+	m.selectorItemTargets = nil
+	cw := max(1, w-m.styles.overlay.GetHorizontalFrameSize())
+	ch := max(4, h-m.styles.overlay.GetVerticalFrameSize())
+	m.selectorLV.SetSize(cw, ch)
+	ox := max(0, (m.width-w)/2)
+	oy := max(0, (m.height-h)/2)
+	// overlay border+padding => content origin
+	contentX := ox + 3
+	contentY := oy + 2
+	// list title occupies first line when enabled
+	rowY := contentY + 1
+	for i, it := range m.selectorLV.VisibleItems() {
+		si, ok := it.(selectorItem)
+		if !ok {
+			continue
+		}
+		m.selectorItemTargets = append(m.selectorItemTargets, clickTarget{
+			x1:   contentX,
+			y1:   rowY + i,
+			x2:   contentX + cw,
+			y2:   rowY + i + 1,
+			idx:  i,
+			text: si.id,
+		})
+	}
+	body := m.selectorLV.View() + "\n" + m.styles.subtle.Render(m.t("Enter confirm   Esc close", "Enter 确认   Esc 关闭"))
+	return m.styles.overlay.Width(w).Height(h).MaxWidth(w).MaxHeight(h).Render(body)
+}
+
+func (m *model) handleSelectorMouse(x, y int) (bool, tea.Cmd) {
+	for _, t := range m.selectorItemTargets {
+		if t.hit(x, y) {
+			m.selectorLV.Select(t.idx)
+			return true, m.applySelectorChoice()
+		}
+	}
+	// click outside closes selector
+	ow := max(36, m.width/3)
+	oh := max(10, m.height/3)
+	ox := max(0, (m.width-ow)/2)
+	oy := max(0, (m.height-oh)/2)
+	if x < ox || x >= ox+ow || y < oy || y >= oy+oh {
+		m.langOpen = false
+		return true, nil
+	}
+	return false, nil
 }
 
 func (m *model) pillForMode() string {
@@ -1541,21 +1945,27 @@ func (m *model) sparkline() string {
 	return b.String()
 }
 
-func (m *model) renderNotificationCenter() string {
-	lines := []string{m.styles.notifTitle.Render("Notifications")}
+func (m *model) renderNotificationCenter(w, h int) string {
+	lines := []string{m.styles.notifTitle.Render(m.t("Notifications", "通知"))}
 	if len(m.notifications) == 0 {
-		lines = append(lines, "", "No recent events")
+		lines = append(lines, "", m.t("No recent events", "暂无事件"))
 		return strings.Join(lines, "\n")
 	}
-	start := max(0, len(m.notifications)-12)
-	for _, n := range m.notifications[start:] {
+	contentW := max(1, w-m.styles.panel.GetHorizontalFrameSize())
+	contentH := max(3, m.panelContentHeight(h)-2)
+	stream := make([]string, 0, len(m.notifications))
+	for _, n := range m.notifications {
 		ts := n.At.Format("15:04:05")
 		line := fmt.Sprintf("[%s] %s", ts, n.Text)
 		if n.Level == "error" {
 			line = m.styles.errorText.Render(line)
 		}
-		lines = append(lines, line)
+		stream = append(stream, line)
 	}
+	m.notifView.Width = contentW
+	m.notifView.Height = contentH
+	m.notifView.SetContent(strings.Join(stream, "\n"))
+	lines = append(lines, m.notifView.View())
 	return strings.Join(lines, "\n")
 }
 
@@ -1864,12 +2274,12 @@ func (m *model) renderProxyModeLine(contentX, y int) string {
 		mode  string
 	}
 	tokens := []modeToken{
-		{label: "Rule", mode: "rule"},
-		{label: "Global", mode: "global"},
-		{label: "Direct", mode: "direct"},
+		{label: m.t("Rule", "规则"), mode: "rule"},
+		{label: m.t("Global", "全局"), mode: "global"},
+		{label: m.t("Direct", "直连"), mode: "direct"},
 	}
 
-	prefix := "Mode: "
+	prefix := m.t("Mode: ", "模式: ")
 	line := prefix
 	cursorX := contentX + lipgloss.Width(prefix)
 	for i, t := range tokens {
@@ -1905,12 +2315,12 @@ func (m *model) renderOverviewModeLines(contentX, y, maxW int) []string {
 		mode  string
 	}
 	tokens := []modeToken{
-		{label: "Rule", mode: "rule"},
-		{label: "Global", mode: "global"},
-		{label: "Direct", mode: "direct"},
+		{label: m.t("Rule", "规则"), mode: "rule"},
+		{label: m.t("Global", "全局"), mode: "global"},
+		{label: m.t("Direct", "直连"), mode: "direct"},
 	}
 
-	prefix := "Switch: "
+	prefix := m.t("Switch: ", "切换: ")
 	sep := " "
 	currentY := y
 	currentLine := prefix
@@ -1963,11 +2373,11 @@ func (m *model) renderOverviewToggleLines(contentX, y, maxW int) []string {
 		on    bool
 	}
 	tokens := []toggleToken{
-		{id: "system-proxy", label: "System Proxy", on: systemOn},
-		{id: "tun", label: "TUN Mode", on: tunOn},
+		{id: "system-proxy", label: m.t("System Proxy", "系统代理"), on: systemOn},
+		{id: "tun", label: m.t("TUN Mode", "TUN 模式"), on: tunOn},
 	}
 
-	prefix := "Toggles: "
+	prefix := m.t("Toggles: ", "开关: ")
 	sep := "   "
 	currentY := y
 	currentLine := prefix
@@ -2035,9 +2445,9 @@ func (m *model) systemProxyEnabled() bool {
 }
 
 func (m *model) renderProxyActionLine(contentX, y int) string {
-	prefix := "Action: "
+	prefix := m.t("Action: ", "操作: ")
 	// 使用 styles.action 渲染按钮，让它看起来像一个真实的按钮块
-	button := m.styles.action.Render(" ⚡ Test All (T) ")
+	button := m.styles.action.Render(m.t(" ⚡ Test All (T) ", " ⚡ 全部测试 (T) "))
 
 	startX := contentX + lipgloss.Width(prefix)
 	endX := startX + lipgloss.Width(button)

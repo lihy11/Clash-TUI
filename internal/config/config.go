@@ -22,6 +22,7 @@ type Settings struct {
 	ManageCore   bool          `yaml:"manage_core"`
 	CoreVersion  string        `yaml:"core_version"`
 	MixedPort    int           `yaml:"mixed_port"`
+	Language     string        `yaml:"language"`
 }
 
 func Default() Settings {
@@ -33,6 +34,7 @@ func Default() Settings {
 		ManageCore:   true,
 		CoreVersion:  "latest",
 		MixedPort:    7890,
+		Language:     "en",
 	}
 }
 
@@ -78,6 +80,11 @@ func Load() (Settings, error) {
 	}
 	if cfg.MixedPort == 0 {
 		cfg.MixedPort = 7890
+	}
+	switch cfg.Language {
+	case "en", "zh-CN":
+	default:
+		cfg.Language = "en"
 	}
 	return cfg, nil
 }

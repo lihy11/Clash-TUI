@@ -15,6 +15,7 @@
 - 日志流查看
 - 订阅导入与更新（单个/全部）
 - 控制器配置持久化
+- 中英文界面切换（Header 语言下拉样式）
 
 ## 2. 技术选型
 
@@ -171,7 +172,13 @@ log_level: info
 manage_core: true
 core_version: latest
 mixed_port: 7890
+language: en
 ```
+
+`language` 可选值：
+
+- `en`
+- `zh-CN`
 
 ## 9. 运行时目录
 
@@ -281,3 +288,45 @@ mixed_port: 7890
 - `internal/ui/styles.go`
 - `cmd/clash-tui/main.go`
 - `internal/ui/layout_test.go`
+
+## 16. 2026-04-01 中英文界面与语言下拉
+
+本次新增界面语言切换能力，并将 Header 右上角原版本位替换为语言选择入口：
+
+- 语言支持
+  - `English` / `中文`
+  - 语言状态持久化到 `~/.config/clash-tui/config.yaml` 的 `language` 字段。
+- 交互
+  - 鼠标点击 Header 右上角语言开关（`EN/中文`）即时切换。
+  - 键盘 `L` 可快速切换语言。
+- UI 替换
+  - Header 右上角由 `v<version>` 替换为 `Lang: <value> ▾`（中文模式显示 `语言: <value> ▾`）。
+- 文案国际化
+  - 覆盖 Header、Tabs、Dashboard、Network、Profiles、System、Footer、Settings 等主要可视文本。
+
+受影响文件：
+
+- `internal/config/config.go`
+- `internal/ui/i18n.go`
+- `internal/ui/app.go`
+
+## 17. 2026-04-01 Bubble 组件化重构
+
+为减少手写 UI 逻辑并提升可维护性，本次把核心页面切换为 Bubbles 组件驱动：
+
+- Footer 帮助区
+  - 从手写提示字符串切换到 `help` + `key` 组合，按当前 tab 动态生成快捷键说明。
+- Rules / Connections
+  - 从手写列宽拼接切换到 `table` 组件，复用组件内置光标与滚动能力。
+- Logs / Notifications
+  - 从手写截断渲染切换到 `viewport`，支持统一滚动与定位。
+- Profiles
+  - 订阅列表切换到 `list` 组件，选择与滚动由组件统一处理。
+- 选择器统一
+  - 语言、主题、模式统一使用 `list` 弹层选择器，减少重复下拉实现。
+
+受影响文件：
+
+- `internal/ui/app.go`
+- `go.mod`
+- `go.sum`
