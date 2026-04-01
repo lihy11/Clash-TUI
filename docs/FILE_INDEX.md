@@ -45,16 +45,64 @@
   - 订阅导入与持久化（`subscriptions.yaml`）
   - 生成 Mihomo 配置（proxy-providers/groups/rules）
 - `internal/core/manager.go`
-  - Mihomo 内核下载、解压、启动、重启
+  - Core 管理器结构与公共入口（`NewManager`/`EnsureBinary`/`WriteConfig`）
+- `internal/core/process.go`
+  - Mihomo 进程生命周期管理（start/stop/restart/pid）
+- `internal/core/release_download.go`
+  - Release 解析、资产筛选、下载进度、解压与 HTTP 客户端
 - `internal/runtime/manager.go`
-  - 启动编排（boot）与配置变更后重载（reload）
+  - 启动编排主流程（boot/reload/close）
+- `internal/runtime/discovery.go`
+  - Controller 可用性探测与本机配置文件候选发现
+- `internal/runtime/auto_import.go`
+  - 从本机配置自动导入订阅条目与名称归一化
 
 ## UI 层
 
 - `internal/ui/styles.go`
   - 主题样式、面板/标签/状态等样式定义
+- `internal/ui/i18n.go`
+  - 中英文文案映射与标签翻译辅助
+- `internal/ui/input_global_mouse.go`
+  - 全局键盘处理与主鼠标分发入口
+  - Tab 点击、语言切换与 selector 鼠标处理
+- `internal/ui/input_network.go`
+  - Network/Proxies 页键盘与鼠标处理（组/节点选择、延迟测试）
+- `internal/ui/input_tabs.go`
+  - Overview/Profiles/Rules/Connections/Logs/Settings/Palette 输入处理
+- `internal/ui/update_flow.go`
+  - `Update` 拆分后的消息分发流程
+  - 键盘更新、消息处理与输入组件后处理
+- `internal/ui/selector.go`
+  - 主题/模式/语言选择器（`list` 组件）
+  - 选择器渲染与鼠标命中处理
+- `internal/ui/palette_and_settings.go`
+  - Command Palette 动作与设置保存重连逻辑
+- `internal/ui/state_proxy_sync.go`
+  - 代理组/节点状态同步、节点可视区与吞吐速率更新
+- `internal/ui/state_inputs_notifications.go`
+  - 输入初始化、状态提示与通知队列、系统代理状态镜像
+- `internal/ui/render_helpers.go`
+  - 面板与模式行渲染、开关渲染、延迟单元格渲染辅助
+- `internal/ui/commands.go`
+  - Mihomo 与 runtime 相关 Tea 命令构造器
+- `internal/ui/utils.go`
+  - 文本宽度处理、速率格式化、基础数值工具
+- `internal/ui/views_shell.go`
+  - Header/Tabs/SubTabs/Footer 壳层渲染
+  - `renderBody` 页面路由
+- `internal/ui/views_overview.go`
+  - Dashboard/Providers/Notifications 渲染
+- `internal/ui/views_network.go`
+  - Proxies/Rules/Connections 渲染
+- `internal/ui/views_system_profiles.go`
+  - Logs/Profiles/Settings 渲染
 - `internal/ui/app.go`
   - Bubble Tea 主 model
-  - 页面渲染（Overview/Proxies/Connections/Rules/Logs/Profiles/Settings）
-  - 快捷键与鼠标处理
-  - 轮询调度与消息处理
+  - 主结构体与入口（`NewModel` / `Init` / `View`）
+- `internal/ui/layout_test.go`
+  - Header 行宽约束测试
+- `internal/ui/mouse_test.go`
+  - 鼠标滚轮/点击行为回归测试（节点选择与语言切换）
+- `internal/ui/selector_test.go`
+  - 选择器打开/关闭/鼠标选择行为测试

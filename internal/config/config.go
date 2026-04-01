@@ -34,7 +34,7 @@ func Default() Settings {
 		ManageCore:   true,
 		CoreVersion:  "latest",
 		MixedPort:    7890,
-		Language:     "en",
+		Language:     "zh-CN",
 	}
 }
 
@@ -84,7 +84,7 @@ func Load() (Settings, error) {
 	switch cfg.Language {
 	case "en", "zh-CN":
 	default:
-		cfg.Language = "en"
+		cfg.Language = "zh-CN"
 	}
 	return cfg, nil
 }

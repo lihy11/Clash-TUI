@@ -172,7 +172,7 @@ log_level: info
 manage_core: true
 core_version: latest
 mixed_port: 7890
-language: en
+language: zh-CN
 ```
 
 `language` 可选值：
@@ -318,6 +318,35 @@ language: en
   - 从手写提示字符串切换到 `help` + `key` 组合，按当前 tab 动态生成快捷键说明。
 - Rules / Connections
   - 从手写列宽拼接切换到 `table` 组件，复用组件内置光标与滚动能力。
+
+## 18. 2026-04-01 UI 结构重构与测试补齐
+
+本次在不改变现有交互行为的前提下，完成 `internal/ui` 的结构性拆分，降低 `app.go` 复杂度并增强回归保障：
+
+- 文件拆分
+  - `internal/ui/views.go`
+    - 收敛 Header/Tabs/Footer 与主要页面渲染方法。
+  - `internal/ui/input_handlers.go`
+    - 收敛全部输入处理（全局键盘、鼠标、各页 `handle*`）。
+  - `internal/ui/selector.go`
+    - 收敛语言/主题/模式选择器逻辑与鼠标命中。
+  - `internal/ui/app.go`
+    - 保留 model、消息流转与状态同步，减少输入/渲染实现细节耦合。
+- 状态命名清理
+  - `langOpen` 更名为 `selectorOpen`，语义与当前功能一致（语言/主题/模式共用选择器）。
+  - 移除未使用状态字段 `langCursor`。
+- 测试补齐
+  - 新增 `internal/ui/selector_test.go`：
+    - `openSelector` 状态初始化
+    - 主题选择应用与关闭行为
+    - 选择器鼠标外部点击关闭
+    - 选择器鼠标点击条目选择
+  - 保留并复用 `internal/ui/mouse_test.go` 对触摸板滚动不触发选择、点击触发选择等行为回归保障。
+
+验证结果：
+
+- `go test ./internal/ui` 通过
+- `go build ./...` 通过
 - Logs / Notifications
   - 从手写截断渲染切换到 `viewport`，支持统一滚动与定位。
 - Profiles
@@ -330,3 +359,94 @@ language: en
 - `internal/ui/app.go`
 - `go.mod`
 - `go.sum`
+
+## 19. 2026-04-01 二次降复杂重构（消息流与命令分层）
+
+为进一步降低单文件复杂度，本次继续按职责拆分 `internal/ui`，保持行为不变：
+
+- 新增文件
+  - `internal/ui/update_flow.go`：承接 `Update` 的键盘/消息分发与输入后处理逻辑。
+  - `internal/ui/palette_and_settings.go`：收敛 Palette 动作与 Settings 保存重连。
+  - `internal/ui/state_helpers.go`：收敛状态同步、输入初始化、布局与延迟显示辅助。
+  - `internal/ui/commands.go`：收敛所有 Tea 命令构造（Mihomo/runtime 请求）。
+  - `internal/ui/utils.go`：收敛宽度裁剪、速率格式化与 `min/max/clamp` 工具。
+- 主文件变化
+  - `internal/ui/app.go` 从“巨型聚合文件”进一步缩减到 model/入口主干，`Update` 改为分发壳层。
+- 复杂度结果
+  - `internal/ui/app.go` 当前约 387 行（此前约 1686 行）。
+
+验证结果：
+
+- `go test ./internal/ui -count=1` 通过
+- `go test ./... -count=1` 通过
+- `go build ./...` 通过
+
+## 20. 2026-04-01 三次降复杂重构（渲染按页面分文件）
+
+在不改变 UI 行为前提下，继续拆分原渲染聚合文件，按页面职责落盘：
+
+- 渲染文件拆分
+  - `internal/ui/views_shell.go`：Header/Tabs/SubTabs/Footer 与 `renderBody` 路由。
+  - `internal/ui/views_overview.go`：Dashboard、Providers、Notifications 与趋势渲染。
+  - `internal/ui/views_network.go`：Proxies、Rules、Connections 渲染。
+  - `internal/ui/views_system_profiles.go`：Logs、Profiles、Settings 渲染。
+- 清理
+  - 删除旧的 `internal/ui/views.go`，避免多职责集中。
+
+验证结果：
+
+- `go test ./internal/ui -count=1` 通过
+- `go test ./... -count=1` 通过
+- `go build ./...` 通过
+
+## 21. 2026-04-01 四次降复杂重构（Core/Runtime 分层）
+
+本次将 `core` 与 `runtime` 从单文件重职责结构拆分为职责内聚文件，保持行为不变：
+
+- `internal/core` 拆分
+  - `manager.go`：管理器定义与公共入口。
+  - `process.go`：进程生命周期与 PID 管理。
+  - `release_download.go`：发布页解析、资产筛选、下载/解压、下载进度输出。
+- `internal/runtime` 拆分
+  - `manager.go`：Boot/Reload/Close 主流程。
+  - `discovery.go`：controller 探测与本机配置候选发现。
+  - `auto_import.go`：本机配置订阅自动导入与命名规范化。
+
+重构后复杂度（行数）：
+
+- `internal/core/*.go`：`89 + 166 + 364`
+- `internal/runtime/*.go`：`108 + 139 + 194`
+
+验证结果：
+
+- `go test ./... -count=1` 通过
+- `go build ./...` 通过
+- `go vet ./...` 通过
+
+## 22. 2026-04-01 五次降复杂重构（UI 输入/状态按职责拆分）
+
+在保持交互语义不变前提下，继续对 `internal/ui` 做“不过度拆分”的职责拆分：
+
+- 输入层拆分（由单一 `input_handlers.go` 拆为 3 个文件）
+  - `input_global_mouse.go`：全局键盘与鼠标分发入口。
+  - `input_network.go`：Proxies 页组/节点输入与点击选择逻辑。
+  - `input_tabs.go`：Overview/Profiles/Connections/Rules/Logs/Settings/Palette 输入处理。
+- 状态与渲染辅助拆分（由单一 `state_helpers.go` 拆为 3 个文件）
+  - `state_proxy_sync.go`：代理组/节点同步与吞吐更新。
+  - `state_inputs_notifications.go`：输入初始化、状态提示、通知队列、系统代理状态判断。
+  - `render_helpers.go`：模式行/开关/面板/延迟单元格渲染辅助。
+
+重构后复杂度（行数）：
+
+- `input_global_mouse.go`：157
+- `input_network.go`：83
+- `input_tabs.go`：197
+- `state_proxy_sync.go`：112
+- `state_inputs_notifications.go`：88
+- `render_helpers.go`：271
+
+验证结果：
+
+- `go test ./... -count=1` 通过
+- `go build ./...` 通过
+- `go vet ./...` 通过

@@ -6,6 +6,16 @@
 [![License](https://img.shields.io/github/license/lihy11/Clash-TUI)](./LICENSE)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/lihy11/Clash-TUI)](./go.mod)
 
+## 界面预览
+
+### Dashboard
+
+![Dashboard](./docs/dashboard.png)
+
+### 节点选择
+
+![Node Selection](./docs/node.png)
+
 ## 快速下载
 
 - Release 页面（推荐）：  
