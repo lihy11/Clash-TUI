@@ -8,9 +8,6 @@ import (
 )
 
 func (m *model) renderOverview(w, h int) string {
-	m.overviewModeTargets = nil
-	m.overviewToggleTargets = nil
-
 	leftX := 0
 	leftY := m.bodyY
 	leftW := w

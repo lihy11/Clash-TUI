@@ -3,6 +3,8 @@ package ui
 import (
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"clash-tui/internal/config"
 )
 
@@ -86,6 +88,36 @@ func TestHandleSelectorMouseSelectsItem(t *testing.T) {
 	}
 	if m.selectorOpen {
 		t.Fatalf("expected selector closed after item click")
+	}
+	if m.themeIndex != 0 {
+		t.Fatalf("expected theme index 0, got %d", m.themeIndex)
+	}
+}
+
+func TestSelectorClickViaMouseRouterClosesAndApplies(t *testing.T) {
+	m := NewModel(config.Default(), nil)
+	m.width = 120
+	m.height = 40
+	m.themeIndex = 1
+	m.openSelector("theme")
+	_ = m.View()
+	if len(m.selectorItemTargets) == 0 {
+		t.Fatalf("expected selector item targets")
+	}
+	target := m.selectorItemTargets[0]
+
+	cmd := m.handleMouseMsg(tea.MouseMsg{
+		X:      target.x1,
+		Y:      target.y1,
+		Button: tea.MouseButtonLeft,
+		Action: tea.MouseActionPress,
+	})
+
+	if cmd != nil {
+		t.Fatalf("expected nil cmd for theme selection by router")
+	}
+	if m.selectorOpen {
+		t.Fatalf("expected selector closed after router click")
 	}
 	if m.themeIndex != 0 {
 		t.Fatalf("expected theme index 0, got %d", m.themeIndex)

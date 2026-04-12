@@ -206,23 +206,14 @@ type model struct {
 	logsView   viewport.Model
 	notifView  viewport.Model
 	profileLV  list.Model
+	mouse      mouseRouter
 
 	bodyY int
 	bodyW int
 	bodyH int
 
-	mainTabTargets        []clickTarget
-	networkTabTargets     []clickTarget
-	systemTabTargets      []clickTarget
-	profileImportTargets  []clickTarget
-	overviewModeTargets   []clickTarget
-	overviewToggleTargets []clickTarget
-	proxyModeTargets      []clickTarget
-	proxyActionTarget     []clickTarget
-	proxyGroupTargets     []clickTarget
-	proxyNodeTargets      []clickTarget
-	langChipTarget        clickTarget
-	selectorItemTargets   []clickTarget
+	profileImportTargets []clickTarget
+	selectorItemTargets  []clickTarget
 }
 
 func NewModel(cfg config.Settings, rt *runtime.Manager) *model {
@@ -356,6 +347,7 @@ func (m *model) View() string {
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.styles.subtle.Render(msg))
 	}
 
+	m.mouse.reset()
 	head := m.renderHeader(m.width)
 	headerH := lipgloss.Height(head)
 	tabline := m.renderTabs(m.width, headerH)

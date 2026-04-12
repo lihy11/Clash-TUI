@@ -423,6 +423,33 @@ language: zh-CN
 - `go build ./...` 通过
 - `go vet ./...` 通过
 
+## 23. 2026-04-12 UI 鼠标架构重构（统一动作路由）
+
+本次开始把 UI 鼠标交互从“渲染时生成若干 `clickTarget`，更新时分支命中”迁移到统一动作路由：
+
+- 新增基础设施
+  - `internal/ui/mouse_router.go`
+  - 统一维护 `hitBox + mouseAction + mouseRouter`
+  - 由渲染阶段注册点击动作，`Update` 阶段按动作 ID 分发
+- 已迁移区域
+  - Header 语言切换
+  - 主 Tab / Network 子 Tab / System 子 Tab
+  - Overview 模式切换与开关点击
+  - Proxies 模式切换、`Test All`、组选择、节点选择
+  - Selector 弹层项选择与外部点击关闭
+- 结构变化
+  - `handleMouseMsg` 变成统一入口，优先走 `mouseRouter`
+  - 页面渲染代码开始承担“注册动作”职责，减少更新阶段的页面分支命中逻辑
+  - 旧 `clickTarget` 结构暂时保留给未完全迁移路径与兼容测试，后续可继续清理
+
+本次目标不是一次性移除所有旧字段，而是先把高频交互主路径稳定迁到动作化架构，确保后续继续组件化时不再增加手工坐标耦合。
+
+验证结果：
+
+- `go test ./... -count=1` 通过
+- `go build ./...` 通过
+- `go vet ./...` 通过
+
 ## 22. 2026-04-01 五次降复杂重构（UI 输入/状态按职责拆分）
 
 在保持交互语义不变前提下，继续对 `internal/ui` 做“不过度拆分”的职责拆分：

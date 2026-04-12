@@ -65,9 +65,7 @@ func TestProxyNodeClickSelects(t *testing.T) {
 	m.groupCursor = 0
 	m.nodes = []string{"n0", "n1", "n2"}
 	m.nodeCursor = 0
-	m.proxyNodeTargets = []clickTarget{
-		{x1: 0, y1: 0, x2: 10, y2: 1, idx: 1},
-	}
+	m.mouse.register(mouseAction{ID: "proxy.node.select", Index: 1, Box: hitBox{x1: 0, y1: 0, x2: 10, y2: 1}})
 
 	cmd := m.handleMouseMsg(tea.MouseMsg{
 		X:      1,
@@ -91,9 +89,7 @@ func TestNonLeftPressDoesNotTriggerNodeSelection(t *testing.T) {
 	m.groupCursor = 0
 	m.nodes = []string{"n0", "n1", "n2"}
 	m.nodeCursor = 0
-	m.proxyNodeTargets = []clickTarget{
-		{x1: 0, y1: 0, x2: 10, y2: 1, idx: 2},
-	}
+	m.mouse.register(mouseAction{ID: "proxy.node.select", Index: 2, Box: hitBox{x1: 0, y1: 0, x2: 10, y2: 1}})
 
 	_ = m.handleMouseMsg(tea.MouseMsg{
 		X:      1,
@@ -109,7 +105,7 @@ func TestNonLeftPressDoesNotTriggerNodeSelection(t *testing.T) {
 func TestLanguageChipClickTogglesLanguage(t *testing.T) {
 	m := newTestModel(t)
 	m.cfg.Language = "en"
-	m.langChipTarget = clickTarget{x1: 0, y1: 0, x2: 20, y2: 1}
+	m.mouse.register(mouseAction{ID: "header.language.toggle", Box: hitBox{x1: 0, y1: 0, x2: 20, y2: 1}})
 
 	_ = m.handleMouseMsg(tea.MouseMsg{
 		X:      1,

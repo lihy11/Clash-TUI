@@ -2,29 +2,6 @@ package ui
 
 import tea "github.com/charmbracelet/bubbletea"
 
-func (m *model) handleOverviewMouse(x, y int) tea.Cmd {
-	for _, t := range m.overviewModeTargets {
-		if t.hit(x, y) {
-			return tea.Batch(setModeCmd(m.client, t.text), fetchConfigCmd(m.client))
-		}
-	}
-	for _, t := range m.overviewToggleTargets {
-		if t.hit(x, y) {
-			switch t.text {
-			case "system-proxy:on":
-				return setSystemProxyCmd(m.client, true)
-			case "system-proxy:off":
-				return setSystemProxyCmd(m.client, false)
-			case "tun:on":
-				return setTunCmd(m.client, true)
-			case "tun:off":
-				return setTunCmd(m.client, false)
-			}
-		}
-	}
-	return nil
-}
-
 func (m *model) handleProfilesMouse(x, y int) tea.Cmd {
 	for _, t := range m.profileImportTargets {
 		if t.hit(x, y) {

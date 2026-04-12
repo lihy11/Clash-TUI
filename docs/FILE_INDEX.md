@@ -65,7 +65,10 @@
   - 中英文文案映射与标签翻译辅助
 - `internal/ui/input_global_mouse.go`
   - 全局键盘处理与主鼠标分发入口
-  - Tab 点击、语言切换与 selector 鼠标处理
+  - 统一鼠标动作分发与少量兼容回退逻辑
+- `internal/ui/mouse_router.go`
+  - 命中框与鼠标动作注册/分发
+  - 通过动作 ID 把渲染层点击区与业务处理解耦
 - `internal/ui/input_network.go`
   - Network/Proxies 页键盘与鼠标处理（组/节点选择、延迟测试）
 - `internal/ui/input_tabs.go`
@@ -75,7 +78,7 @@
   - 键盘更新、消息处理与输入组件后处理
 - `internal/ui/selector.go`
   - 主题/模式/语言选择器（`list` 组件）
-  - 选择器渲染与鼠标命中处理
+  - 选择器渲染与路由化鼠标动作处理
 - `internal/ui/palette_and_settings.go`
   - Command Palette 动作与设置保存重连逻辑
 - `internal/ui/state_proxy_sync.go`
@@ -103,6 +106,8 @@
 - `internal/ui/layout_test.go`
   - Header 行宽约束测试
 - `internal/ui/mouse_test.go`
-  - 鼠标滚轮/点击行为回归测试（节点选择与语言切换）
+  - 鼠标滚轮/点击行为回归测试（节点选择、语言切换、统一路由）
+- `internal/ui/mouse_router_test.go`
+  - 鼠标动作优先级与分发测试
 - `internal/ui/selector_test.go`
-  - 选择器打开/关闭/鼠标选择行为测试
+  - 选择器打开/关闭/鼠标选择行为测试（含统一路由路径）

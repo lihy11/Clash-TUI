@@ -114,6 +114,19 @@ func (m *model) applySelectorChoice() tea.Cmd {
 	}
 }
 
+func (m *model) applySelectorChoiceByID(id string) tea.Cmd {
+	for i, it := range m.selectorLV.Items() {
+		opt, ok := it.(selectorItem)
+		if !ok || opt.id != id {
+			continue
+		}
+		m.selectorLV.Select(i)
+		return m.applySelectorChoice()
+	}
+	m.selectorOpen = false
+	return nil
+}
+
 func (m *model) renderSelectorOverlay(w, h int) string {
 	m.selectorItemTargets = nil
 	cw := max(1, w-m.styles.overlay.GetHorizontalFrameSize())
@@ -121,6 +134,10 @@ func (m *model) renderSelectorOverlay(w, h int) string {
 	m.selectorLV.SetSize(cw, ch)
 	ox := max(0, (m.width-w)/2)
 	oy := max(0, (m.height-h)/2)
+	m.mouse.register(mouseAction{
+		ID:  "selector.dismiss",
+		Box: hitBox{x1: 0, y1: 0, x2: m.width, y2: m.height},
+	})
 	// overlay border+padding => content origin
 	contentX := ox + 3
 	contentY := oy + 2
@@ -138,6 +155,11 @@ func (m *model) renderSelectorOverlay(w, h int) string {
 			y2:   rowY + i + 1,
 			idx:  i,
 			text: si.id,
+		})
+		m.mouse.register(mouseAction{
+			ID:   "selector.choose",
+			Text: si.id,
+			Box:  hitBox{x1: contentX, y1: rowY + i, x2: contentX + cw, y2: rowY + i + 1},
 		})
 	}
 	body := m.selectorLV.View() + "\n" + m.styles.subtle.Render(m.t("Enter confirm   Esc close", "Enter 确认   Esc 关闭"))

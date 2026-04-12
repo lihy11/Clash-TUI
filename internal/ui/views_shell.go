@@ -9,7 +9,6 @@ import (
 )
 
 func (m *model) renderHeader(w int) string {
-	m.langChipTarget = clickTarget{}
 	title := "Clash-TUI"
 	mode := strings.ToUpper(strings.TrimSpace(m.baseCfg.Mode))
 	if mode == "" {
@@ -50,13 +49,15 @@ func (m *model) renderHeader(w int) string {
 	if lw := lipgloss.Width(right1); lw <= rightW {
 		statusPadLeft := 2
 		chipX := statusPadLeft + leftW + gap + (rightW - lw) + lipgloss.Width(right1Prefix)
-		m.langChipTarget = clickTarget{x1: chipX, y1: 0, x2: chipX + lipgloss.Width(chip), y2: 1}
+		m.mouse.register(mouseAction{
+			ID:  "header.language.toggle",
+			Box: hitBox{x1: chipX, y1: 0, x2: chipX + lipgloss.Width(chip), y2: 1},
+		})
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, top, bottom)
 }
 
 func (m *model) renderTabs(w, y int) string {
-	m.mainTabTargets = nil
 	out := make([]string, 0, len(tabs))
 	cursorX := 0
 	for i := range tabs {
@@ -72,7 +73,11 @@ func (m *model) renderTabs(w, y int) string {
 			token = m.styles.tab.Render(" " + label + " ")
 		}
 		wToken := lipgloss.Width(token)
-		m.mainTabTargets = append(m.mainTabTargets, clickTarget{x1: cursorX, y1: y, x2: cursorX + wToken, y2: y + 1, idx: i})
+		m.mouse.register(mouseAction{
+			ID:    "tab.main.select",
+			Index: i,
+			Box:   hitBox{x1: cursorX, y1: y, x2: cursorX + wToken, y2: y + 1},
+		})
 		cursorX += wToken
 		out = append(out, token)
 	}
@@ -85,7 +90,7 @@ func (m *model) renderNetwork(w, h int) string {
 	for i := range networkTabs {
 		items = append(items, m.networkTabLabel(i))
 	}
-	sub := m.renderSubTabs(m.t("NETWORK", "网络"), items, m.networkTab, m.bodyY, &m.networkTabTargets)
+	sub := m.renderSubTabs(m.t("NETWORK", "网络"), items, m.networkTab, m.bodyY)
 	subW := max(1, w)
 	sub = m.styles.subTabBar.Width(subW).MaxWidth(subW).Render(sub)
 	bodyH := max(4, h-lipgloss.Height(sub))
@@ -106,7 +111,7 @@ func (m *model) renderSystem(w, h int) string {
 	for i := range systemTabs {
 		items = append(items, m.systemTabLabel(i))
 	}
-	sub := m.renderSubTabs(m.t("SYSTEM", "系统"), items, m.systemTab, m.bodyY, &m.systemTabTargets)
+	sub := m.renderSubTabs(m.t("SYSTEM", "系统"), items, m.systemTab, m.bodyY)
 	subW := max(1, w)
 	sub = m.styles.subTabBar.Width(subW).MaxWidth(subW).Render(sub)
 	bodyH := max(4, h-lipgloss.Height(sub))
@@ -116,8 +121,7 @@ func (m *model) renderSystem(w, h int) string {
 	return lipgloss.JoinVertical(lipgloss.Left, sub, m.renderSettings(w, bodyH))
 }
 
-func (m *model) renderSubTabs(section string, items []string, active, y int, targets *[]clickTarget) string {
-	*targets = nil
+func (m *model) renderSubTabs(section string, items []string, active, y int) string {
 	out := make([]string, 0, len(items)+2)
 	sectionToken := m.styles.sectionLabel.Render(section)
 	out = append(out, sectionToken, m.styles.subtle.Render("│"))
@@ -130,7 +134,15 @@ func (m *model) renderSubTabs(section string, items []string, active, y int, tar
 			token = m.styles.subTab.Render(t)
 		}
 		wToken := lipgloss.Width(token)
-		*targets = append(*targets, clickTarget{x1: cursorX, y1: y, x2: cursorX + wToken, y2: y + 1, idx: i})
+		actionID := "tab.network.select"
+		if section == m.t("SYSTEM", "系统") {
+			actionID = "tab.system.select"
+		}
+		m.mouse.register(mouseAction{
+			ID:    actionID,
+			Index: i,
+			Box:   hitBox{x1: cursorX, y1: y, x2: cursorX + wToken, y2: y + 1},
+		})
 		cursorX += wToken
 		out = append(out, token)
 	}

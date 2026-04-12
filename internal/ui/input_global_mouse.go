@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"strconv"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -95,14 +96,16 @@ func (m *model) handleGlobalKeys(msg tea.KeyMsg) tea.Cmd {
 
 func (m *model) handleMouseMsg(msg tea.MouseMsg) tea.Cmd {
 	if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+		if action, ok := m.mouse.dispatch(msg); ok {
+			return m.handleMouseAction(action)
+		}
+	}
+
+	if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 		if m.selectorOpen {
 			if handled, cmd := m.handleSelectorMouse(msg.X, msg.Y); handled {
 				return cmd
 			}
-		}
-		if m.langChipTarget.hit(msg.X, msg.Y) {
-			m.toggleLanguage()
-			return nil
 		}
 	}
 
@@ -120,34 +123,6 @@ func (m *model) handleMouseMsg(msg tea.MouseMsg) tea.Cmd {
 	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
 		return nil
 	}
-	for _, t := range m.mainTabTargets {
-		if t.hit(msg.X, msg.Y) {
-			m.tab = t.idx
-			return nil
-		}
-	}
-	if m.tab == 1 {
-		for _, t := range m.networkTabTargets {
-			if t.hit(msg.X, msg.Y) {
-				m.networkTab = t.idx
-				return nil
-			}
-		}
-	}
-	if m.tab == 3 {
-		for _, t := range m.systemTabTargets {
-			if t.hit(msg.X, msg.Y) {
-				m.systemTab = t.idx
-				return nil
-			}
-		}
-	}
-	if m.tab == 0 {
-		return m.handleOverviewMouse(msg.X, msg.Y)
-	}
-	if m.tab == 1 && m.networkTab == 0 {
-		return m.handleProxyMouse(msg.X, msg.Y)
-	}
 	if m.tab == 2 && m.importing {
 		return m.handleProfilesMouse(msg.X, msg.Y)
 	}
@@ -162,4 +137,61 @@ func (m *model) scrollProxyNodesByWheel(delta int) {
 	page := max(1, m.nodePageSize)
 	maxOffset := max(0, len(m.nodes)-page)
 	m.nodeOffset = clamp(m.nodeOffset+delta, 0, maxOffset)
+}
+
+func (m *model) handleMouseAction(action mouseAction) tea.Cmd {
+	switch action.ID {
+	case "header.language.toggle":
+		m.toggleLanguage()
+		return nil
+	case "tab.main.select":
+		m.tab = clamp(action.Index, 0, len(tabs)-1)
+		return nil
+	case "tab.network.select":
+		m.networkTab = clamp(action.Index, 0, len(networkTabs)-1)
+		return nil
+	case "tab.system.select":
+		m.systemTab = clamp(action.Index, 0, len(systemTabs)-1)
+		return nil
+	case "overview.mode.set", "proxy.mode.set":
+		return tea.Batch(setModeCmd(m.client, action.Text), fetchConfigCmd(m.client))
+	case "overview.toggle":
+		switch action.Text {
+		case "system-proxy:on":
+			return setSystemProxyCmd(m.client, true)
+		case "system-proxy:off":
+			return setSystemProxyCmd(m.client, false)
+		case "tun:on":
+			return setTunCmd(m.client, true)
+		case "tun:off":
+			return setTunCmd(m.client, false)
+		}
+		return nil
+	case "proxy.action":
+		if action.Text == "test_all" && len(m.nodes) > 0 {
+			m.setStatus(fmt.Sprintf("testing %d nodes...", len(m.nodes)))
+			return testAllNodesCmd(m.client, m.nodes)
+		}
+		return nil
+	case "proxy.group.select":
+		m.groupCursor = clamp(action.Index, 0, max(0, len(m.groups)-1))
+		m.syncNodeCursorByGroup()
+		return nil
+	case "selector.dismiss":
+		m.selectorOpen = false
+		return nil
+	case "selector.choose":
+		return m.applySelectorChoiceByID(action.Text)
+	case "proxy.node.select":
+		m.nodeCursor = clamp(action.Index, 0, max(0, len(m.nodes)-1))
+		m.ensureNodeVisible()
+		if len(m.groups) > 0 && len(m.nodes) > 0 {
+			group := m.groups[m.groupCursor]
+			node := m.nodes[m.nodeCursor]
+			return setProxyCmd(m.client, group, node)
+		}
+		return nil
+	default:
+		return nil
+	}
 }

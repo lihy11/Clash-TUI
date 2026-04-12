@@ -56,7 +56,11 @@ func (m *model) renderProxyModeLine(contentX, y int) string {
 		}
 		startX := cursorX
 		endX := startX + lipgloss.Width(token)
-		m.proxyModeTargets = append(m.proxyModeTargets, clickTarget{x1: startX, y1: y, x2: endX, y2: y + 1, text: t.mode})
+		m.mouse.register(mouseAction{
+			ID:   "proxy.mode.set",
+			Text: t.mode,
+			Box:  hitBox{x1: startX, y1: y, x2: endX, y2: y + 1},
+		})
 		line += token
 		cursorX = endX
 		if i < len(tokens)-1 {
@@ -107,7 +111,11 @@ func (m *model) renderOverviewModeLines(contentX, y, maxW int) []string {
 		}
 		startX := cursorX
 		endX := startX + lipgloss.Width(token)
-		m.overviewModeTargets = append(m.overviewModeTargets, clickTarget{x1: startX, y1: currentY, x2: endX, y2: currentY + 1, text: t.mode})
+		m.mouse.register(mouseAction{
+			ID:   "overview.mode.set",
+			Text: t.mode,
+			Box:  hitBox{x1: startX, y1: currentY, x2: endX, y2: currentY + 1},
+		})
 		currentLine += token
 		cursorX = endX
 	}
@@ -157,9 +165,10 @@ func (m *model) renderOverviewToggleLines(contentX, y, maxW int) []string {
 		currentLine += token
 
 		wToken := lipgloss.Width(token)
-		m.overviewToggleTargets = append(m.overviewToggleTargets, clickTarget{
-			x1: cursorX, y1: currentY, x2: cursorX + wToken, y2: currentY + 1,
-			text: fmt.Sprintf("%s:%s", t.id, map[bool]string{true: "off", false: "on"}[t.on]),
+		m.mouse.register(mouseAction{
+			ID:   "overview.toggle",
+			Text: fmt.Sprintf("%s:%s", t.id, map[bool]string{true: "off", false: "on"}[t.on]),
+			Box:  hitBox{x1: cursorX, y1: currentY, x2: cursorX + wToken, y2: currentY + 1},
 		})
 		cursorX += wToken
 	}
@@ -187,7 +196,11 @@ func (m *model) renderProxyActionLine(contentX, y int) string {
 
 	startX := contentX + lipgloss.Width(prefix)
 	endX := startX + lipgloss.Width(button)
-	m.proxyActionTarget = append(m.proxyActionTarget, clickTarget{x1: startX, y1: y, x2: endX, y2: y + 1, text: "test_all"})
+	m.mouse.register(mouseAction{
+		ID:   "proxy.action",
+		Text: "test_all",
+		Box:  hitBox{x1: startX, y1: y, x2: endX, y2: y + 1},
+	})
 	return prefix + button
 }
 

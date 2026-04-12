@@ -9,11 +9,6 @@ import (
 )
 
 func (m *model) renderProxies(w, h int) string {
-	m.proxyModeTargets = nil
-	m.proxyActionTarget = nil
-	m.proxyGroupTargets = nil
-	m.proxyNodeTargets = nil
-
 	leftX, leftY, leftW, leftH, rightX, rightY, rightW, rightH := m.proxyPanels(w, h)
 	leftContentX, leftContentY := m.panelContentOrigin(leftX, leftY)
 	rightContentX, rightContentY := m.panelContentOrigin(rightX, rightY)
@@ -31,7 +26,16 @@ func (m *model) renderProxies(w, h int) string {
 		}
 		leftLines = append(leftLines, line)
 		row := leftRow
-		m.proxyGroupTargets = append(m.proxyGroupTargets, clickTarget{x1: leftContentX, y1: leftContentY + row, x2: leftContentX + max(1, leftW-m.styles.panel.GetHorizontalFrameSize()), y2: leftContentY + row + 1, idx: i})
+		m.mouse.register(mouseAction{
+			ID:    "proxy.group.select",
+			Index: i,
+			Box: hitBox{
+				x1: leftContentX,
+				y1: leftContentY + row,
+				x2: leftContentX + max(1, leftW-m.styles.panel.GetHorizontalFrameSize()),
+				y2: leftContentY + row + 1,
+			},
+		})
 		leftRow += max(1, lipgloss.Height(line))
 	}
 	if len(m.groups) == 0 {
@@ -88,7 +92,16 @@ func (m *model) renderProxies(w, h int) string {
 		}
 		rightLines = append(rightLines, line)
 		row := nodeStartRow + (i - start)
-		m.proxyNodeTargets = append(m.proxyNodeTargets, clickTarget{x1: rightContentX, y1: rightContentY + row, x2: rightContentX + max(1, rightW-m.styles.panel.GetHorizontalFrameSize()), y2: rightContentY + row + 1, idx: i})
+		m.mouse.register(mouseAction{
+			ID:    "proxy.node.select",
+			Index: i,
+			Box: hitBox{
+				x1: rightContentX,
+				y1: rightContentY + row,
+				x2: rightContentX + max(1, rightW-m.styles.panel.GetHorizontalFrameSize()),
+				y2: rightContentY + row + 1,
+			},
+		})
 	}
 	if len(m.nodes) == 0 {
 		rightLines = append(rightLines, m.t("No nodes", "暂无节点"))
