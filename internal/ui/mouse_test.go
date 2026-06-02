@@ -25,7 +25,7 @@ func newTestModel(t *testing.T) *model {
 	return NewModel(config.Default(), nil)
 }
 
-func TestProxyWheelScrollDoesNotChangeSelection(t *testing.T) {
+func TestProxyWheelScrollMovesSelectionAndKeepsItVisible(t *testing.T) {
 	m := newTestModel(t)
 	m.tab = 1
 	m.networkTab = 0
@@ -38,11 +38,11 @@ func TestProxyWheelScrollDoesNotChangeSelection(t *testing.T) {
 		Button: tea.MouseButtonWheelDown,
 		Action: tea.MouseActionPress,
 	})
-	if m.nodeCursor != 2 {
-		t.Fatalf("wheel changed selection cursor: got=%d want=%d", m.nodeCursor, 2)
+	if m.nodeCursor != 3 {
+		t.Fatalf("wheel down should move selection cursor: got=%d want=%d", m.nodeCursor, 3)
 	}
 	if m.nodeOffset != 2 {
-		t.Fatalf("wheel should scroll offset: got=%d want=%d", m.nodeOffset, 2)
+		t.Fatalf("wheel down should keep selected node visible: got=%d want=%d", m.nodeOffset, 2)
 	}
 
 	_ = m.handleMouseMsg(tea.MouseMsg{
@@ -50,10 +50,10 @@ func TestProxyWheelScrollDoesNotChangeSelection(t *testing.T) {
 		Action: tea.MouseActionPress,
 	})
 	if m.nodeCursor != 2 {
-		t.Fatalf("wheel up changed selection cursor: got=%d want=%d", m.nodeCursor, 2)
+		t.Fatalf("wheel up should move selection cursor: got=%d want=%d", m.nodeCursor, 2)
 	}
-	if m.nodeOffset != 1 {
-		t.Fatalf("wheel up should scroll offset back: got=%d want=%d", m.nodeOffset, 1)
+	if m.nodeOffset != 2 {
+		t.Fatalf("wheel up should preserve visible selected node: got=%d want=%d", m.nodeOffset, 2)
 	}
 }
 

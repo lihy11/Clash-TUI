@@ -22,11 +22,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("init runtime failed: %v", err)
 	}
-	bootCtx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	// Core download can be very slow on some networks; keep a generous startup timeout.
+	bootCtx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
 	defer cancel()
 	if err := rt.Boot(bootCtx, &cfg); err != nil {
-		log.Printf("boot runtime warning: %v", err)
-		log.Printf("continue launching TUI; you can reconfigure in Settings/Profiles")
+		log.Fatalf("boot runtime failed: %v", err)
 	}
 
 	m := ui.NewModel(cfg, rt)

@@ -28,6 +28,42 @@ func (m *model) handleProxyKeys(msg tea.KeyMsg) tea.Cmd {
 			m.nodeCursor = clamp(m.nodeCursor+1, 0, max(0, len(m.nodes)-1))
 			m.ensureNodeVisible()
 		}
+	case "pgup":
+		if m.proxyPane == 0 {
+			step := max(1, m.nodePageSize)
+			m.groupCursor = clamp(m.groupCursor-step, 0, max(0, len(m.groups)-1))
+			m.syncNodeCursorByGroup()
+		} else {
+			step := max(1, m.nodePageSize)
+			m.nodeCursor = clamp(m.nodeCursor-step, 0, max(0, len(m.nodes)-1))
+			m.ensureNodeVisible()
+		}
+	case "pgdown":
+		if m.proxyPane == 0 {
+			step := max(1, m.nodePageSize)
+			m.groupCursor = clamp(m.groupCursor+step, 0, max(0, len(m.groups)-1))
+			m.syncNodeCursorByGroup()
+		} else {
+			step := max(1, m.nodePageSize)
+			m.nodeCursor = clamp(m.nodeCursor+step, 0, max(0, len(m.nodes)-1))
+			m.ensureNodeVisible()
+		}
+	case "home":
+		if m.proxyPane == 0 {
+			m.groupCursor = 0
+			m.syncNodeCursorByGroup()
+		} else {
+			m.nodeCursor = 0
+			m.ensureNodeVisible()
+		}
+	case "end":
+		if m.proxyPane == 0 {
+			m.groupCursor = max(0, len(m.groups)-1)
+			m.syncNodeCursorByGroup()
+		} else {
+			m.nodeCursor = max(0, len(m.nodes)-1)
+			m.ensureNodeVisible()
+		}
 	case "enter":
 		if m.proxyPane == 1 && len(m.groups) > 0 && len(m.nodes) > 0 {
 			group := m.groups[m.groupCursor]

@@ -66,6 +66,9 @@ func (m *model) renderProxies(w, h int) string {
 		rightLines = append(rightLines, groupLine)
 		rightRow += max(1, lipgloss.Height(groupLine))
 	}
+	countLine := m.styles.subtle.Render(fmt.Sprintf("%s: %d", m.t("Nodes", "节点数"), len(m.nodes)))
+	rightLines = append(rightLines, countLine)
+	rightRow += max(1, lipgloss.Height(countLine))
 	nodeStartRow := rightRow
 	maxNodeRows := max(1, m.panelContentHeight(rightH)-nodeStartRow)
 	if m.proxyPane == 1 {

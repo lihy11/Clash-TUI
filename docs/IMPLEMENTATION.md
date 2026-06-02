@@ -7,6 +7,7 @@
 当前版本覆盖：
 
 - 自动下载/启动 Mihomo 内核（可关闭）
+- Mihomo 内核下载支持 GitHub API、镜像源、断点续传与重试
 - 代理模式切换：Rule / Global / Direct
 - 代理组与节点切换
 - 节点延迟测试
@@ -49,7 +50,7 @@
    - 订阅元信息管理（导入/持久化）
    - 生成 Mihomo 配置（proxy-providers + groups + rules）
 5. `internal/core`
-   - Mihomo 内核下载、解压、启动、重启
+   - Mihomo 内核下载、解压、启动、重试、重启
 6. `internal/runtime`
    - 启动编排（boot/reload）
 7. `cmd/clash-tui`
@@ -159,6 +160,8 @@
 - 请求超时默认 5~10 秒，按接口分配
 - UI 层统一接收错误消息并显示在状态栏
 - 日志流断开自动重连
+- 内核下载优先使用 GitHub Release API；页面解析作为回退路径
+- 内核下载会尝试官方 GitHub URL、自定义代理、默认镜像源，并对候选资产进行重试
 
 ## 8. 配置文件结构
 
@@ -180,6 +183,13 @@ language: zh-CN
 - `en`
 - `zh-CN`
 
+环境变量：
+
+- `MIHOMO_CONTROLLER`：覆盖 External Controller 地址
+- `MIHOMO_SECRET`：覆盖 External Controller 密钥
+- `CLASH_TUI_GITHUB_PROXY`：内核下载 GitHub 代理前缀，例如 `https://ghproxy.example.com`
+- `CLASH_TUI_INSECURE_TLS=1`：内核下载时关闭 TLS 证书校验，仅用于本地网络/证书问题排查
+
 ## 9. 运行时目录
 
 - 配置目录：`~/.config/clash-tui`
@@ -187,6 +197,7 @@ language: zh-CN
   - `subscriptions.yaml`
 - 数据目录：`~/.cache/clash-tui`
   - `core/mihomo`（或 `mihomo.exe`）
+  - `core/mihomo.download.part`（下载中的临时文件，支持断点续传）
   - `mihomo-config.yaml`
   - `proxy_providers/*.yaml`
 

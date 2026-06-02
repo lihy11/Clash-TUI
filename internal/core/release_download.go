@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -14,12 +15,19 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 )
 
 const latestReleasePage = "https://github.com/MetaCubeX/mihomo/releases/latest"
+const latestReleaseAPI = "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
+
+var defaultGitHubMirrors = []string{
+	"https://ghproxy.cn",
+	"https://ghproxy.com",
+}
 
 type releaseAsset struct {
 	Name string `json:"name"`
@@ -32,47 +40,109 @@ type release struct {
 }
 
 func fetchLatestRelease(ctx context.Context) (release, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, latestReleasePage, nil)
-	if err != nil {
-		return release{}, err
+	if rel, err := fetchLatestReleaseFromAPI(ctx); err == nil && len(rel.Assets) > 0 {
+		return rel, nil
 	}
-	req.Header.Set("User-Agent", "clash-tui/1.x")
-	resp, err := coreHTTPClient().Do(req)
-	if err != nil {
-		return release{}, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return release{}, fmt.Errorf("fetch release page failed: %s", resp.Status)
-	}
-	b, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return release{}, err
-	}
-	body := string(b)
-	tag := ""
-	if resp.Request != nil && resp.Request.URL != nil {
-		u := resp.Request.URL.String()
-		if idx := strings.Index(u, "/releases/tag/"); idx >= 0 {
-			tag = u[idx+len("/releases/tag/"):]
-			if q := strings.IndexAny(tag, "?#"); q >= 0 {
-				tag = tag[:q]
+	candidates := githubURLCandidates(latestReleasePage)
+	var lastErr error
+	for i, candidate := range candidates {
+		if i > 0 {
+			log.Printf("switching release-page source (%d/%d): %s", i+1, len(candidates), candidate)
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, candidate, nil)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		req.Header.Set("User-Agent", "clash-tui/1.x")
+		resp, err := coreHTTPClient().Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		b, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			lastErr = readErr
+			continue
+		}
+		if resp.StatusCode >= 300 {
+			lastErr = fmt.Errorf("fetch release page failed: %s", resp.Status)
+			continue
+		}
+		body := string(b)
+		tag := ""
+		if resp.Request != nil && resp.Request.URL != nil {
+			u := resp.Request.URL.String()
+			if idx := strings.Index(u, "/releases/tag/"); idx >= 0 {
+				tag = u[idx+len("/releases/tag/"):]
+				if q := strings.IndexAny(tag, "?#"); q >= 0 {
+					tag = tag[:q]
+				}
 			}
 		}
-	}
-	if tag == "" {
-		if t := parseTagFromHTML(body); t != "" {
-			tag = t
+		if tag == "" {
+			if t := parseTagFromHTML(body); t != "" {
+				tag = t
+			}
 		}
+		out := release{TagName: tag, Assets: parseReleaseAssetsFromHTML(body)}
+		if len(out.Assets) == 0 && out.TagName != "" {
+			out.Assets = synthesizeAssetsByTag(out.TagName)
+		}
+		if len(out.Assets) == 0 {
+			lastErr = fmt.Errorf("no downloadable assets found on release page (tag=%q)", out.TagName)
+			continue
+		}
+		return out, nil
 	}
-	out := release{TagName: tag, Assets: parseReleaseAssetsFromHTML(body)}
-	if len(out.Assets) == 0 && out.TagName != "" {
-		out.Assets = synthesizeAssetsByTag(out.TagName)
+	if lastErr != nil {
+		return release{}, lastErr
 	}
-	if len(out.Assets) == 0 {
-		return release{}, fmt.Errorf("no downloadable assets found on release page (tag=%q)", out.TagName)
+	return release{}, fmt.Errorf("fetch release page failed from all sources")
+}
+
+func fetchLatestReleaseFromAPI(ctx context.Context) (release, error) {
+	candidates := githubURLCandidates(latestReleaseAPI)
+	var lastErr error
+	for i, candidate := range candidates {
+		if i > 0 {
+			log.Printf("switching release-api source (%d/%d): %s", i+1, len(candidates), candidate)
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, candidate, nil)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		req.Header.Set("User-Agent", "clash-tui/1.x")
+		req.Header.Set("Accept", "application/vnd.github+json")
+		resp, err := coreHTTPClient().Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if resp.StatusCode >= 300 {
+			lastErr = fmt.Errorf("fetch latest release api failed: %s", resp.Status)
+			_ = resp.Body.Close()
+			continue
+		}
+		var out release
+		decodeErr := json.NewDecoder(resp.Body).Decode(&out)
+		_ = resp.Body.Close()
+		if decodeErr != nil {
+			lastErr = decodeErr
+			continue
+		}
+		if out.TagName == "" || len(out.Assets) == 0 {
+			lastErr = fmt.Errorf("latest release api response missing tag/assets")
+			continue
+		}
+		return out, nil
 	}
-	return out, nil
+	if lastErr != nil {
+		return release{}, lastErr
+	}
+	return release{}, fmt.Errorf("fetch latest release api failed from all sources")
 }
 
 func parseTagFromHTML(html string) string {
@@ -145,6 +215,9 @@ func pickAssets(assets []releaseAsset) ([]releaseAsset, error) {
 		if strings.Contains(n, "sha256") {
 			continue
 		}
+		if !strings.HasSuffix(n, ".gz") && !strings.HasSuffix(n, ".zip") {
+			continue
+		}
 		if strings.Contains(n, targetOS) && strings.Contains(n, targetArch) {
 			candidates = append(candidates, a)
 		}
@@ -152,10 +225,51 @@ func pickAssets(assets []releaseAsset) ([]releaseAsset, error) {
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("no release asset for %s/%s", targetOS, targetArch)
 	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return assetPriority(candidates[i].Name) < assetPriority(candidates[j].Name)
+	})
+	if len(candidates) > 4 {
+		candidates = candidates[:4]
+	}
 	return candidates, nil
 }
 
+func assetPriority(name string) int {
+	n := strings.ToLower(name)
+	switch {
+	case strings.Contains(n, "compatible"):
+		return 0
+	case strings.Contains(n, "-v1-") || strings.Contains(n, "-v1."):
+		return 1
+	case strings.Contains(n, "-v2-") || strings.Contains(n, "-v2."):
+		return 2
+	case strings.Contains(n, "-v3-") || strings.Contains(n, "-v3."):
+		return 3
+	default:
+		return 4
+	}
+}
+
 func downloadFile(ctx context.Context, src, dst string) error {
+	candidates := githubURLCandidates(src)
+	var lastErr error
+	for i, candidate := range candidates {
+		if i > 0 {
+			log.Printf("switching download source (%d/%d): %s", i+1, len(candidates), candidate)
+		}
+		if err := downloadFileOnce(ctx, candidate, dst); err != nil {
+			lastErr = err
+			continue
+		}
+		return nil
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return fmt.Errorf("download failed from all sources")
+}
+
+func downloadFileOnce(ctx context.Context, src, dst string) error {
 	startAt := int64(0)
 	if st, err := os.Stat(dst); err == nil && st.Size() > 0 {
 		startAt = st.Size()
@@ -356,9 +470,31 @@ func coreHTTPClient() *http.Client {
 	if os.Getenv("CLASH_TUI_INSECURE_TLS") == "1" {
 		log.Printf("warning: CLASH_TUI_INSECURE_TLS=1 enabled, TLS cert verification is disabled for core download")
 		return &http.Client{
-			Timeout: 60 * time.Second,
 			Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}, //nolint:gosec
 		}
 	}
-	return &http.Client{Timeout: 60 * time.Second}
+	return &http.Client{}
+}
+
+func githubURLCandidates(raw string) []string {
+	if !strings.HasPrefix(raw, "https://github.com/") && !strings.HasPrefix(raw, "https://api.github.com/") {
+		return []string{raw}
+	}
+	out := []string{raw}
+	if custom := strings.TrimSpace(os.Getenv("CLASH_TUI_GITHUB_PROXY")); custom != "" {
+		out = append(out, strings.TrimRight(custom, "/")+"/"+raw)
+	}
+	for _, mirror := range defaultGitHubMirrors {
+		out = append(out, strings.TrimRight(mirror, "/")+"/"+raw)
+	}
+	seen := make(map[string]struct{}, len(out))
+	uniq := make([]string, 0, len(out))
+	for _, u := range out {
+		if _, ok := seen[u]; ok {
+			continue
+		}
+		seen[u] = struct{}{}
+		uniq = append(uniq, u)
+	}
+	return uniq
 }

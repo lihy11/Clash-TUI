@@ -9,6 +9,7 @@ import (
 )
 
 func (m *model) rebuildGroupsAndNodes() {
+	prevGroup := m.currentGroup
 	groups := make([]string, 0)
 	for name, p := range m.proxies {
 		if len(p.All) == 0 {
@@ -21,6 +22,32 @@ func (m *model) rebuildGroupsAndNodes() {
 	}
 	sort.Strings(groups)
 	m.groups = groups
+
+	if len(m.groups) == 0 {
+		m.groupCursor = 0
+		m.syncNodeCursorByGroup()
+		return
+	}
+
+	if prevGroup != "" {
+		for i, g := range m.groups {
+			if g == prevGroup {
+				m.groupCursor = i
+				m.syncNodeCursorByGroup()
+				return
+			}
+		}
+	}
+
+	// Prefer PROXY by default because it usually contains the full node list.
+	for i, g := range m.groups {
+		if strings.EqualFold(g, "PROXY") {
+			m.groupCursor = i
+			m.syncNodeCursorByGroup()
+			return
+		}
+	}
+
 	m.groupCursor = clamp(m.groupCursor, 0, max(0, len(m.groups)-1))
 	m.syncNodeCursorByGroup()
 }

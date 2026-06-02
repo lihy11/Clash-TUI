@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"time"
 
 	"os/exec"
 )
@@ -60,14 +61,32 @@ func (m *Manager) EnsureBinary(ctx context.Context) error {
 	tmp := filepath.Join(filepath.Dir(m.execPath), "mihomo.download.part")
 	var lastErr error
 	for i, asset := range assets {
-		log.Printf("downloading core asset (%d/%d): %s", i+1, len(assets), asset.Name)
-		if err := downloadFile(ctx, asset.URL, tmp); err != nil {
-			lastErr = err
-			log.Printf("download failed for %s: %v", asset.Name, err)
-			continue
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		lastErr = nil
-		break
+		if i > 0 {
+			_ = os.Remove(tmp)
+		}
+		for attempt := 1; attempt <= 3; attempt++ {
+			log.Printf("downloading core asset (%d/%d, attempt %d/3): %s", i+1, len(assets), attempt, asset.Name)
+			if err := downloadFile(ctx, asset.URL, tmp); err != nil {
+				lastErr = err
+				log.Printf("download failed for %s (attempt %d/3): %v", asset.Name, attempt, err)
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return ctxErr
+				}
+				if attempt < 3 {
+					time.Sleep(time.Second)
+					continue
+				}
+				break
+			}
+			lastErr = nil
+			break
+		}
+		if lastErr == nil {
+			break
+		}
 	}
 	if lastErr != nil {
 		return lastErr

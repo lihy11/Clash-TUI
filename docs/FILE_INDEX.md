@@ -46,10 +46,11 @@
   - 生成 Mihomo 配置（proxy-providers/groups/rules）
 - `internal/core/manager.go`
   - Core 管理器结构与公共入口（`NewManager`/`EnsureBinary`/`WriteConfig`）
+  - 内核资产候选下载与失败重试调度
 - `internal/core/process.go`
   - Mihomo 进程生命周期管理（start/stop/restart/pid）
 - `internal/core/release_download.go`
-  - Release 解析、资产筛选、下载进度、解压与 HTTP 客户端
+  - Release API/页面解析、资产筛选、GitHub 镜像源、下载进度、断点续传、解压与 HTTP 客户端
 - `internal/runtime/manager.go`
   - 启动编排主流程（boot/reload/close）
 - `internal/runtime/discovery.go`
@@ -70,7 +71,7 @@
   - 命中框与鼠标动作注册/分发
   - 通过动作 ID 把渲染层点击区与业务处理解耦
 - `internal/ui/input_network.go`
-  - Network/Proxies 页键盘与鼠标处理（组/节点选择、延迟测试）
+  - Network/Proxies 页键盘与鼠标处理（组/节点选择、翻页/Home/End、延迟测试）
 - `internal/ui/input_tabs.go`
   - Overview/Profiles/Rules/Connections/Logs/Settings/Palette 输入处理
 - `internal/ui/update_flow.go`
@@ -82,7 +83,7 @@
 - `internal/ui/palette_and_settings.go`
   - Command Palette 动作与设置保存重连逻辑
 - `internal/ui/state_proxy_sync.go`
-  - 代理组/节点状态同步、节点可视区与吞吐速率更新
+  - 代理组/节点状态同步、默认 PROXY 组选择、节点可视区与吞吐速率更新
 - `internal/ui/state_inputs_notifications.go`
   - 输入初始化、状态提示与通知队列、系统代理状态镜像
 - `internal/ui/render_helpers.go`

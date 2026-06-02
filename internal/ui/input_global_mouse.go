@@ -134,9 +134,8 @@ func (m *model) scrollProxyNodesByWheel(delta int) {
 		return
 	}
 	m.proxyPane = 1
-	page := max(1, m.nodePageSize)
-	maxOffset := max(0, len(m.nodes)-page)
-	m.nodeOffset = clamp(m.nodeOffset+delta, 0, maxOffset)
+	m.nodeCursor = clamp(m.nodeCursor+delta, 0, max(0, len(m.nodes)-1))
+	m.ensureNodeVisible()
 }
 
 func (m *model) handleMouseAction(action mouseAction) tea.Cmd {
